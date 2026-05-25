@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 61922,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "betty.ns.cloudflare.com",
+            "port": 2096,
+            "users": [
+              {
+                "id": "3f0f36f5-f091-45c5-88c9-4bcc545b922c",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/45.76.183.217=49292",
+          "headers": {
+            "Host": "hetz.x-smm.com"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "hetz.x-smm.com",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

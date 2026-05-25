@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 49181,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "54.36.98.4",
+            "port": 8443,
+            "users": [
+              {
+                "id": "6202b230-417c-4d8e-b624-0f71afa9c75d",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/?ed=2560&Telegram\ud83c\udde8\ud83c\uddf3 @WangCai2",
+          "headers": {
+            "Host": "sni.111000.v6.navy"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "sni.111000.v6.navy",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

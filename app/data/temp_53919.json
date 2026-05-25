@@ -1,0 +1,48 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 53919,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "38.180.132.206",
+            "port": 443,
+            "users": [
+              {
+                "id": "11e559f8-f5b7-48be-9ab5-7fc0915569e0",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "google.com",
+          "fingerprint": "chrome",
+          "publicKey": "MvZRXOgSBhkQB88kC6CnjiKs7pveuPMWA_TFSOvyRQ0",
+          "shortId": "cf12caecc0",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

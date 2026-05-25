@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 65508,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "benz.pmpads.com",
+            "port": 35055,
+            "users": [
+              {
+                "id": "5a500023-a3dc-48c2-af27-d120d795bcf4",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/",
+          "headers": {
+            "Host": "benz.pmpads.com"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "benz.pmpads.com",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 59898,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "join-svnteam.mobilezahra.com",
+            "port": 2020,
+            "users": [
+              {
+                "id": "SVNTEAM",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.latimes.com",
+          "fingerprint": "chrome",
+          "publicKey": "xG-F2y2cFw5f7biQeeMu7wfBbiQLo9o1i_rIdXrZCj0",
+          "shortId": "",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

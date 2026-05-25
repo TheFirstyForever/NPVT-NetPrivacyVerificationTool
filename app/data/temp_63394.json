@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 63394,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "103.184.44.62",
+            "port": 2053,
+            "users": [
+              {
+                "id": "f775978b-6e22-41a8-ae5e-5f9779e6745f",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/?ed=2048",
+          "headers": {
+            "Host": "juzibaipiao.5112233.xyz"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "juzibaipiao.5112233.xyz",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

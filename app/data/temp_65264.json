@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 65264,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "labeller.neonime83.workers.dev",
+            "port": 443,
+            "users": [
+              {
+                "id": "a73b8135-ec7a-4f70-bac6-81fbccad4515",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/?ed=2560",
+          "headers": {
+            "Host": "labeller.neonime83.workers.dev"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "labeller.neonime83.workers.dev",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

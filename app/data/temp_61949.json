@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 61949,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "104.19.255.51",
+            "port": 2053,
+            "users": [
+              {
+                "id": "4b90796f-8973-467e-966b-54319b064ee9",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/backup",
+          "headers": {
+            "Host": "weidokxdjifmdmnr0tcjnisdx.bale.bio"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "weidokxdjifmdmnr0tcjnisdx.bale.bio",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

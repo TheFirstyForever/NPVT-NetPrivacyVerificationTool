@@ -1,0 +1,49 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 49169,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "owa.westbenet.pictures",
+            "port": 443,
+            "users": [
+              {
+                "id": "4cda0075-cc01-4862-a915-7db6177eb31e",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.tradingview.com",
+          "fingerprint": "chrome",
+          "publicKey": "uwZYhbH3FOExfMpDg7MoWM2Lt9MUAq0qU9MoPk1xY3k",
+          "shortId": "df317c95559b",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

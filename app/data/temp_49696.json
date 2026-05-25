@@ -1,0 +1,49 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 49696,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "dns.dressforida.monster",
+            "port": 443,
+            "users": [
+              {
+                "id": "de4f567a-1cf2-4b54-8a48-1c9ebe8a301a",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.techradar.com",
+          "fingerprint": "chrome",
+          "publicKey": "4YLfHf90V012Oyd2wHbwAXaJNvNUGrKWmatTKc165U8",
+          "shortId": "f39ed05da799",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

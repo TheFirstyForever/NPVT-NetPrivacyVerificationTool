@@ -1,0 +1,49 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 53022,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "auto-6.barryvpn.com",
+            "port": 443,
+            "users": [
+              {
+                "id": "5939cbe2-93e0-436f-b799-16c1c9d1fc16",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "5post-gate-test.x5.ru",
+          "fingerprint": "qq",
+          "publicKey": "I0fEW8_ADJkOVuU98orsk7R_XZljGRHnVNfirvFg4DU",
+          "shortId": "ae",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+# BEST ELITE NODE (4/4 resources)
+# Name: 🌐 WS-TLS | @filembad
+# Protocol: VLESS
+# Avg RTT: 517.2ms
+# Resources: 4/4
+# Timestamp: 2026-04-13 23:56:01
+#============================================================
+vless://82806057-969b-40a7-b23e-bbf2fb562358@104.18.12.149:443?path=%2F&security=tls&encryption=none&insecure=0&fp=chrome&type=ws&allowInsecure=0&sni=000113.shop#%F0%9F%8C%90%20WS-TLS%20%7C%20%40filembad

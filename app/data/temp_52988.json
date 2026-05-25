@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 52988,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "68.183.230.164",
+            "port": 443,
+            "users": [
+              {
+                "id": "981fca81-5be1-41f8-ac9b-d138e8109943",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/?ed=2560&Telegram\ud83c\udde8\ud83c\uddf3@WangCai2",
+          "headers": {
+            "Host": "babayaga-6i7.pages.dev"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "babayaga-6i7.pages.dev",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

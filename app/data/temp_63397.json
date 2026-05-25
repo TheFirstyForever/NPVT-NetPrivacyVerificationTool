@@ -1,0 +1,55 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 63397,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "104.19.20.140",
+            "port": 443,
+            "users": [
+              {
+                "id": "0c820bc5-4e67-4796-b6cb-6075685e7c75",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/?ed=2048",
+          "headers": {
+            "Host": "xxx.66500-280b-471c-b2b8-d68b7f9960001.workers.dev"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "xxx.66500-280b-471c-b2b8-d68b7f9960001.workers.dev",
+          "allowInsecure": false,
+          "alpn": [
+            "h3",
+            "h2"
+          ]
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

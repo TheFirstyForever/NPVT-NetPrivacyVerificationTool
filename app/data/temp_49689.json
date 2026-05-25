@@ -1,0 +1,49 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 49689,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "45.95.232.229",
+            "port": 52000,
+            "users": [
+              {
+                "id": "fd2bfdd2-68eb-49b0-98ad-ed82f901edde",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "music.yandex.ru",
+          "fingerprint": "chrome",
+          "publicKey": "KXqoXRnGxHCnTT17cRpFRhKNj_3km3DnWEJ5L3FtSwg",
+          "shortId": "edd8887128ea",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

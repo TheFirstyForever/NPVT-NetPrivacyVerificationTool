@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 49968,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "141.193.213.40",
+            "port": 443,
+            "users": [
+              {
+                "id": "42add63b-deda-4e71-aa48-ddd288181858",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/?ed=2560&Telegram\ud83c\udde8\ud83c\uddf3@WangCai2",
+          "headers": {
+            "Host": "edtunnel-eiz.pages.dev"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "edtunnel-eiz.pages.dev",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

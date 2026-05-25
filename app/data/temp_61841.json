@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 61841,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "14.40.124.226",
+            "port": 50003,
+            "users": [
+              {
+                "id": "f61a4285-7264-4d07-9408-7b9ba1922c26",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "Telegram@\u8282\u70b9\u72c2\u9b54/?ed=2560",
+          "headers": {
+            "Host": "gaosir.unfeeling.sbs"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "gaosir.unfeeling.sbs",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

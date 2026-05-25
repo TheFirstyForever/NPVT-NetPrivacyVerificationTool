@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 65237,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "restless-dew-894b.amirhost4.workers.dev",
+            "port": 443,
+            "users": [
+              {
+                "id": "40afa553-1745-4f62-a380-4163c7bb4870",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/@freenettir",
+          "headers": {
+            "Host": "restless-dew-894b.amirhost4.workers.dev"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "restless-dew-894b.amirhost4.workers.dev",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

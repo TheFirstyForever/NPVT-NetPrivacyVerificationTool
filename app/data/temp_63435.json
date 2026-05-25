@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 63435,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "89.208.104.146",
+            "port": 21742,
+            "users": [
+              {
+                "id": "1f7ee8ad-66d4-4392-9347-d658c92a28b9",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "reality",
+        "grpcSettings": {
+          "serviceName": "Boobies"
+        },
+        "realitySettings": {
+          "serverName": "www.bahmanbroker.com",
+          "fingerprint": "chrome",
+          "publicKey": "_mCZeOGUOeiVbcRghdnadWuCTcsMOeS1g24-zqB-iiA",
+          "shortId": "443ddbe9",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

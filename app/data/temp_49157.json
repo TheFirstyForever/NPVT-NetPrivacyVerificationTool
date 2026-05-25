@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 49157,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "104.20.18.131",
+            "port": 443,
+            "users": [
+              {
+                "id": "2928d83a-ca75-4d52-b437-fa78c7601378",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/freedom-1rj.pages.dev/?ed=2560",
+          "headers": {
+            "Host": "freedom-1rj.pages.dev"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "freedom-1rj.pages.dev",
+          "allowInsecure": false
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

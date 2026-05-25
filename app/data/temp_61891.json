@@ -1,0 +1,48 @@
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "port": 61891,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "app.cloud.10ofbest.ir",
+            "port": 1845,
+            "users": [
+              {
+                "id": "9d67ed3c-4ad0-4eee-87a0-544d13fd619e",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "excoino.com",
+          "fingerprint": "firefox",
+          "publicKey": "jwkdnmOs0hSqJiYbEIUYZHHsgeYgkDd-PAwUsZmIDm4",
+          "shortId": "",
+          "spiderX": "/"
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
