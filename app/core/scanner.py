@@ -632,7 +632,9 @@ class LogicVerifier:
                 await self._log(f"[SKIP] Empty protocol | {link_preview}")
                 return None
 
-            config_path = os.path.join("app", "data", f"temp_{port}.json")
+            temp_dir = os.path.join("app", "temp_configs")
+            os.makedirs(temp_dir, exist_ok=True)
+            config_path = os.path.join(temp_dir, f"temp_{port}.json")
             try:
                 # Сохраняем временный конфиг
                 with open(config_path, "w", encoding="utf-8") as f:

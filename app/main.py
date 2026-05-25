@@ -5,13 +5,16 @@ Made by @TheFirSStYfOreVer
 """
 
 import asyncio
+import json
 import os
 import re
 import sys
 import time
 import threading
+import webbrowser
 from datetime import datetime
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 import customtkinter as ctk
 from PIL import Image
@@ -21,6 +24,8 @@ import aiohttp_socks
 
 # Core imports
 from core.scanner import LogicVerifier
+from core.sub_server import LocalSubscriptionServer
+from core.goida_parser import fetch_and_parse
 
 # Pyperclip для копирования
 try:
@@ -36,11 +41,37 @@ ctk.set_default_color_theme("dark-blue")
 # Константы
 CONCURRENT_LIMIT = 50
 PROXY_REGEX = re.compile(r'(vless|vmess|trojan|ss)://[^\s<>"\']+', re.IGNORECASE)
+LINKS_CACHE_PATH = os.path.join("app", "data", "links_cache.json")
 
 
 def is_proxy_link(text):
     """Проверяет, является ли строка прокси-ссылкой."""
     return text.startswith(("vless://", "vmess://", "trojan://", "ss://"))
+
+
+def _save_links_cache(links: List[str]) -> None:
+    """Сохраняет список удалённо загруженных ссылок в кэш."""
+    try:
+        os.makedirs(os.path.dirname(LINKS_CACHE_PATH), exist_ok=True)
+        payload = {
+            "cached_at": datetime.now().isoformat(timespec="seconds"),
+            "count": len(links),
+            "links": links,
+        }
+        with open(LINKS_CACHE_PATH, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _load_links_cache() -> List[str]:
+    """Загружает ссылки из кэша. Возвращает пустой список если кэша нет."""
+    try:
+        with open(LINKS_CACHE_PATH, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        return payload.get("links", [])
+    except Exception:
+        return []
 
 
 class AsyncTkinterBridge:
@@ -210,13 +241,13 @@ class ResultsPanel(ctk.CTkFrame):
         self.table_frame = ctk.CTkFrame(self, fg_color=("#1A1A2E", "#1A1A2E"))
         self.table_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
-        # Заголовки таблицы
-        headers = ["#", "Status", "Node", "Protocol", "Base RTT", "Resources", "Avg RTT", "YT|TG|DC|IG"]
+        # Заголовки таблицы (убрали детализированную колонку YT|TG|DC|IG)
+        headers = ["#", "Status", "Node", "Protocol", "Base RTT", "Resources", "Avg RTT"]
         header_frame = ctk.CTkFrame(self.table_frame, fg_color=("#2D2D44", "#2D2D44"), height=30)
         header_frame.pack(fill="x", padx=1, pady=1)
         header_frame.pack_propagate(False)
         
-        col_widths = [4, 12, 20, 8, 10, 10, 10, 20]
+        col_widths = [4, 12, 20, 8, 10, 10, 10]
         for i, (header, width) in enumerate(zip(headers, col_widths)):
             lbl = ctk.CTkLabel(
                 header_frame,
@@ -315,20 +346,6 @@ class ResultsPanel(ctk.CTkFrame):
         accessibility = result.get("accessibility", "0/4")
         avg_rtt = f"{result.get('avg_resource_rtt', 0):.0f}" if result.get("avg_resource_rtt", 0) > 0 else "-"
         
-        details = result.get("resource_results", {})
-        domains_map = {"youtube.com": "YT", "t.me": "TG", "discord.com": "DC", "instagram.com": "IG"}
-        resource_strs = []
-        for domain, short in domains_map.items():
-            if domain in details:
-                success, rtt = details[domain]
-                if success:
-                    resource_strs.append(f"{short}:{rtt:.0f}")
-                else:
-                    resource_strs.append(f"{short}:T")
-            else:
-                resource_strs.append(f"{short}:-")
-        resource_text = "|".join(resource_strs)
-        
         cols_data = [
             (str(idx), 4),
             (status_text, 12),
@@ -336,8 +353,7 @@ class ResultsPanel(ctk.CTkFrame):
             (protocol, 8),
             (ping, 10),
             (accessibility, 10),
-            (avg_rtt, 10),
-            (resource_text, 20)
+            (avg_rtt, 10)
         ]
         
         for text, width in cols_data:
@@ -377,7 +393,8 @@ class CurrentNodePanel(ctk.CTkFrame):
         
         # Информационные поля
         self.info_frame = ctk.CTkFrame(self, fg_color=("#1A1A2E", "#1A1A2E"))
-        self.info_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        # Не расширяем, чтобы кнопки всегда оставались видимыми
+        self.info_frame.pack(fill="both", expand=False, padx=10, pady=5)
         
         self.fields = {}
         field_names = ["Name:", "Host:", "Port:", "Protocol:", "Network:", "Security:"]
@@ -493,11 +510,35 @@ class BestConfigPanel(ctk.CTkFrame):
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=("#FFD700", "#FFD700")
         )
-        self.header.pack(pady=(10, 5), padx=10, anchor="w")
-        
-        # Информация о лучшей конфигурации
+        self.header.pack(pady=(10, 2), padx=10, anchor="w")
+
+        # Панель управления отображением деталей (кнопка-"треугольник")
+        self.toggle_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.toggle_frame.pack(fill="x", padx=10, pady=(0, 3))
+        self.details_visible = False
+        self.toggle_btn = ctk.CTkButton(
+            self.toggle_frame,
+            width=28,
+            height=24,
+            text="▶",
+            command=self._toggle_details,
+            fg_color=("#2A2A3A", "#2A2A3A"),
+            hover_color=("#3A3A4A", "#3A3A4A")
+        )
+        self.toggle_btn.pack(side="right")
+
+        # Информация о лучшей конфигурации (краткая)
         self.info_frame = ctk.CTkFrame(self, fg_color=("#1A1A2E", "#1A1A2E"))
-        self.info_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.info_frame.pack(fill="x", expand=False, padx=10, pady=5)
+
+        # Прокручиваемая подробная область (по умолчанию скрыта)
+        self.details_frame = ctk.CTkScrollableFrame(
+            self,
+            fg_color=("#1A1A2E", "#1A1A2E"),
+            height=220,
+            width=280
+        )
+        # Не pack-аем здесь — отображается по кнопке
         
         self.status_label = ctk.CTkLabel(
             self.info_frame,
@@ -507,9 +548,9 @@ class BestConfigPanel(ctk.CTkFrame):
         )
         self.status_label.pack(pady=20)
         
-        # Кнопки
+        # Кнопки (всегда внизу)
         self.button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.button_frame.pack(fill="x", padx=10, pady=5)
+        self.button_frame.pack(side="bottom", fill="x", padx=10, pady=5)
         
         self.copy_btn = ctk.CTkButton(
             self.button_frame,
@@ -520,16 +561,17 @@ class BestConfigPanel(ctk.CTkFrame):
             state="disabled"
         )
         self.copy_btn.pack(fill="x", pady=2)
-        
-        self.save_btn = ctk.CTkButton(
+
+        self.open_btn = ctk.CTkButton(
             self.button_frame,
-            text="💾 Save to File",
-            command=self._save_to_file,
+            text="🌐 Open in App (happ://)",
+            command=self._open_in_app,
             fg_color=("#1E3A5F", "#1E3A5F"),
             hover_color=("#2E4A6F", "#2E4A6F"),
             state="disabled"
         )
-        self.save_btn.pack(fill="x", pady=2)
+        self.open_btn.pack(fill="x", pady=2)
+
     
     def update_config(self, result: dict):
         """Обновляет лучшую конфигурацию."""
@@ -550,159 +592,202 @@ class BestConfigPanel(ctk.CTkFrame):
         if not self.best_config:
             return
         
+        # Перерисовываем краткую информацию
         for widget in self.info_frame.winfo_children():
             widget.destroy()
-        
+
         name = self.best_config.get("name", "Unknown")[:25]
         avg_rtt = self.best_config.get("avg_resource_rtt", 0)
         accessibility = self.best_config.get("accessibility", "0/4")
-        
+
         ctk.CTkLabel(
             self.info_frame,
             text=f"{name}",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=("#FFD700", "#FFD700")
-        ).pack(pady=(10, 5))
-        
+        ).pack(pady=(6, 2), anchor="w", padx=8)
+
         ctk.CTkLabel(
             self.info_frame,
-            text=f"Protocol: {self.best_config.get('type', '?').upper()}",
+            text=f"Protocol: {self.best_config.get('type', '?').upper()}  |  Avg: {avg_rtt:.1f}ms  |  Access: {accessibility}",
             font=ctk.CTkFont(size=11)
-        ).pack()
-        
-        ctk.CTkLabel(
-            self.info_frame,
-            text=f"Average RTT: {avg_rtt:.1f}ms",
-            font=ctk.CTkFont(size=11),
-            text_color=("#00FF7F", "#00FF7F")
-        ).pack()
-        
-        ctk.CTkLabel(
-            self.info_frame,
-            text=f"Accessibility: {accessibility}",
-            font=ctk.CTkFont(size=11),
-            text_color=("#00FF7F", "#00FF7F")
-        ).pack()
-        
-        # Детали по ресурсам
+        ).pack(anchor="w", padx=8)
+
+        # Перерисовываем подробности в прокручиваемой области
+        for w in self.details_frame.winfo_children():
+            w.destroy()
+
         details = self.best_config.get("resource_results", {})
         domains_map = {"youtube.com": "YT", "t.me": "TG", "discord.com": "DC", "instagram.com": "IG"}
-        
-        detail_frame = ctk.CTkFrame(self.info_frame, fg_color="transparent")
-        detail_frame.pack(pady=5)
-        
+        parts = []
         for domain, short in domains_map.items():
             if domain in details:
                 success, rtt = details[domain]
-                color = "#00FF7F" if success else "#FF6B6B"
-                text = f"{short}: {rtt:.0f}ms" if success else f"{short}: TIMEOUT"
+                if success:
+                    parts.append(f"{short}:{int(rtt):d}")
+                else:
+                    parts.append(f"{short}:T")
             else:
-                color = "#888888"
-                text = f"{short}: -"
-            
-            ctk.CTkLabel(
-                detail_frame,
-                text=text,
-                font=ctk.CTkFont(size=10, family="Consolas"),
-                text_color=color
-            ).pack(side="left", padx=5)
+                parts.append(f"{short}:-")
+        one_line = " | ".join(parts)
+        ctk.CTkLabel(
+            self.details_frame,
+            text=one_line,
+            font=ctk.CTkFont(size=11, family="Consolas"),
+            text_color=("#CCCCCC", "#CCCCCC"),
+            anchor="w",
+            justify="left"
+        ).pack(fill="x", padx=6, pady=(4, 6))
+
+        # Полная ссылка (обрезаем для вида)
+        link = self.best_config.get("link", "")
+        if link:
+            ctk.CTkLabel(self.details_frame, text=f"Link: {link}", font=ctk.CTkFont(size=10), text_color=("#AAAAAA", "#AAAAAA"), anchor="w", justify="left", wraplength=260).pack(fill="x", padx=6, pady=(4,6))
         
         self.copy_btn.configure(state="normal")
-        self.save_btn.configure(state="normal")
-    
+        self.open_btn.configure(state="normal")
+        # Если детали уже развернуты — убедимся, что прокрутка активна
+        if self.details_visible:
+            self._enable_details_wheel(True)
+
+    def _toggle_details(self):
+        """Показать/скрыть подробную информацию со скроллом."""
+        try:
+            if self.details_visible:
+                self.details_frame.pack_forget()
+                self.details_visible = False
+                self.toggle_btn.configure(text="▶")
+                self._enable_details_wheel(False)
+            else:
+                self.details_frame.pack(fill="both", expand=False, padx=10, pady=(0, 5))
+                self.details_visible = True
+                self.toggle_btn.configure(text="▼")
+                self._enable_details_wheel(True)
+        except Exception:
+            pass
+
+    def _on_mousewheel(self, event):
+        """Прокрутка колесиком (Windows/macOS)."""
+        try:
+            canvas = getattr(self.details_frame, "_parent_canvas", None)
+            if self.details_visible and canvas is not None:
+                delta = int(-1 * (event.delta / 120))
+                canvas.yview_scroll(delta, "units")
+        except Exception:
+            pass
+
+    def _on_mousewheel_linux(self, event):
+        """Прокрутка колесиком (Linux Button-4/5)."""
+        try:
+            canvas = getattr(self.details_frame, "_parent_canvas", None)
+            if self.details_visible and canvas is not None:
+                delta = -1 if getattr(event, "num", 5) == 4 else 1
+                canvas.yview_scroll(delta, "units")
+        except Exception:
+            pass
+
+    def _enable_details_wheel(self, enable: bool):
+        """Включает/выключает обработку колесика мыши для блока details."""
+        try:
+            if enable:
+                self.details_frame.bind_all("<MouseWheel>", self._on_mousewheel)
+                self.details_frame.bind_all("<Button-4>", self._on_mousewheel_linux)
+                self.details_frame.bind_all("<Button-5>", self._on_mousewheel_linux)
+            else:
+                self.details_frame.unbind_all("<MouseWheel>")
+                self.details_frame.unbind_all("<Button-4>")
+                self.details_frame.unbind_all("<Button-5>")
+        except Exception:
+            pass
     def _copy_to_clipboard(self):
-        """Копирует ссылку в буфер обмена."""
+        """Копирует ссылку в буфер обмена (зелёная кнопка)."""
         if not self.best_config:
             return
-        
         link = self.best_config.get("link", "")
         if not link:
             return
-        
         try:
             copied = False
-            
-            # Пробуем pyperclip
             if HAS_PYPERCLIP:
                 try:
                     pyperclip.copy(link)
                     copied = True
-                except Exception as pe:
-                    print(f"pyperclip failed: {pe}, trying fallback...")
-            
-            # Fallback для Windows через ctypes
-            if not copied:
+                except Exception:
+                    copied = False
+            if not copied and sys.platform == "win32":
                 import ctypes
-                
                 CF_UNICODETEXT = 13
-                
-                # Open clipboard
-                if not ctypes.windll.user32.OpenClipboard(0):
-                    raise Exception("Failed to open clipboard")
-                try:
-                    ctypes.windll.user32.EmptyClipboard()
-                    
-                    # Allocate memory
-                    size = (len(link) + 1) * 2
-                    handle = ctypes.windll.kernel32.GlobalAlloc(0x0002 | 0x0040, size)
-                    if not handle:
-                        raise Exception("Failed to allocate memory")
-                    
-                    # Lock and copy
-                    ptr = ctypes.windll.kernel32.GlobalLock(handle)
-                    if ptr:
-                        ctypes.memmove(ptr, link.encode('utf-16-le'), len(link) * 2)
-                        ctypes.windll.kernel32.GlobalUnlock(handle)
-                    
-                    # Set clipboard data
-                    if not ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle):
-                        raise Exception("Failed to set clipboard data")
-                finally:
-                    ctypes.windll.user32.CloseClipboard()
-            
-            self.copy_btn.configure(text="✅ Copied!", fg_color=("#00FF7F", "#00FF7F"))
+                if ctypes.windll.user32.OpenClipboard(0):
+                    try:
+                        ctypes.windll.user32.EmptyClipboard()
+                        size = (len(link) + 1) * 2
+                        handle = ctypes.windll.kernel32.GlobalAlloc(0x0002 | 0x0040, size)
+                        if handle:
+                            ptr = ctypes.windll.kernel32.GlobalLock(handle)
+                            if ptr:
+                                ctypes.memmove(ptr, link.encode('utf-16-le'), len(link) * 2)
+                                ctypes.windll.kernel32.GlobalUnlock(handle)
+                            ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle)
+                            copied = True
+                    finally:
+                        ctypes.windll.user32.CloseClipboard()
+            self.copy_btn.configure(text=("✅ Copied!" if copied else "❌ Failed"), fg_color=("#00FF7F" if copied else "#7B2D2D", "#00FF7F" if copied else "#7B2D2D"))
             self.after(2000, lambda: self.copy_btn.configure(
                 text="📋 Copy to Clipboard",
                 fg_color=("#2D5016", "#2D5016")
             ))
-        except Exception as e:
-            print(f"Clipboard error: {e}")
-            self.log_panel.add_log(f"Copy failed: {e}", "error")
+        except Exception:
             self.copy_btn.configure(text="❌ Failed", fg_color=("#7B2D2D", "#7B2D2D"))
             self.after(2000, lambda: self.copy_btn.configure(
                 text="📋 Copy to Clipboard",
                 fg_color=("#2D5016", "#2D5016")
             ))
     
-    def _save_to_file(self):
-        """Сохраняет конфигурацию в файл."""
-        if not self.best_config:
-            return
-        
+    def _open_in_app(self):
+        """Открывает диплинк с URL локальной подписки, а не сырым конфигом."""
         try:
-            result_dir = os.path.join("app", "result")
-            os.makedirs(result_dir, exist_ok=True)
-            
-            file_path = os.path.join(result_dir, "optimal_config.txt")
-            
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(f"# NetPrivacy Verification Tool - Optimal Configuration\n")
-                f.write(f"# Made by @TheFirSStYfOreVer\n")
-                f.write(f"# Node: {self.best_config.get('name', 'Unknown')}\n")
-                f.write(f"# Protocol: {self.best_config.get('type', 'Unknown').upper()}\n")
-                f.write(f"# Avg Latency: {self.best_config.get('avg_resource_rtt', 0):.1f}ms\n")
-                f.write(f"# Endpoint Availability: {self.best_config.get('accessibility', '0/4')}\n")
-                f.write(f"# Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"#{'='*60}\n")
-                f.write(f"{self.best_config.get('link', '')}\n")
-            
-            self.save_btn.configure(text="✅ Saved!", fg_color=("#00FF7F", "#00FF7F"))
-            self.after(2000, lambda: self.save_btn.configure(
-                text="💾 Save to File",
+            sub_url = "http://127.0.0.1:54321/sub"
+            encoded = quote(sub_url, safe="")
+
+            def _open(url: str):
+                if sys.platform == "win32":
+                    os.startfile(url)  # type: ignore[attr-defined]
+                else:
+                    webbrowser.open(url, new=1)
+
+            opened_ok = False
+
+            # Популярные варианты диплинков, ожидающие ссылку (subscription URL)
+            candidates = [
+                f"happ:add?url={encoded}",
+                f"happ://add?url={encoded}",
+                f"hiddify://import?url={encoded}",
+                # Фолбэк — открыть сам URL в браузере, чтобы пользователь скопировал
+                sub_url,
+            ]
+
+            for u in candidates:
+                try:
+                    _open(u)
+                    opened_ok = True
+                    break
+                except Exception:
+                    continue
+
+            if not opened_ok:
+                raise Exception("No handler for subscription deeplink/url")
+            self.open_btn.configure(text="✅ Opened", fg_color=("#00FF7F", "#00FF7F"))
+            self.after(2000, lambda: self.open_btn.configure(
+                text="🌐 Open in App (happ://)",
                 fg_color=("#1E3A5F", "#1E3A5F")
             ))
         except Exception as e:
-            print(f"Save error: {e}")
+            print(f"Open error: {e}")
+            self.open_btn.configure(text="❌ Failed", fg_color=("#7B2D2D", "#7B2D2D"))
+            self.after(2000, lambda: self.open_btn.configure(
+                text="🌐 Open in App (happ://)",
+                fg_color=("#1E3A5F", "#1E3A5F")
+            ))
     
     def reset(self):
         """Сбрасывает панель."""
@@ -719,7 +804,15 @@ class BestConfigPanel(ctk.CTkFrame):
         self.status_label.pack(pady=20)
         
         self.copy_btn.configure(state="disabled")
-        self.save_btn.configure(state="disabled")
+        self.open_btn.configure(state="disabled")
+        # Скрываем подробности при сбросе
+        try:
+            self.details_frame.pack_forget()
+        except Exception:
+            pass
+        self.details_visible = False
+        self.toggle_btn.configure(text="▶")
+        self._enable_details_wheel(False)
 
 
 class ControlPanel(ctk.CTkFrame):
@@ -792,7 +885,61 @@ class ControlPanel(ctk.CTkFrame):
             width=70
         )
         self.concurrency_combo.pack(side="right")
-    
+
+        # Разделитель
+        ctk.CTkFrame(self, height=1, fg_color=("#2A2A3A", "#2A2A3A")).pack(
+            fill="x", padx=10, pady=10
+        )
+
+        # Источник конфигов
+        ctk.CTkLabel(
+            self,
+            text="📡 SOURCE MODE",
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(padx=10, anchor="w", pady=(0, 5))
+
+        self.source_mode_var = ctk.StringVar(value="Auto")
+        self.source_seg = ctk.CTkSegmentedButton(
+            self,
+            values=["Auto", "Online", "Cache", "Parse"],
+            variable=self.source_mode_var,
+            font=ctk.CTkFont(size=11),
+            height=32,
+            command=self._on_source_change
+        )
+        self.source_seg.pack(fill="x", padx=10, pady=(0, 4))
+
+        self.cache_info_label = ctk.CTkLabel(
+            self,
+            text=self._get_cache_info(),
+            font=ctk.CTkFont(size=10),
+            text_color=("#888888", "#666666"),
+            wraplength=260,
+            justify="left"
+        )
+        self.cache_info_label.pack(padx=10, anchor="w", pady=(0, 6))
+
+    def get_source_mode(self) -> str:
+        """Returns 'auto', 'online', 'cache' or 'parse'."""
+        return self.source_mode_var.get().lower()
+
+    def _on_source_change(self, value: str) -> None:
+        self.cache_info_label.configure(text=self._get_cache_info())
+
+    def _get_cache_info(self) -> str:
+        try:
+            with open(LINKS_CACHE_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            count = data.get("count", 0)
+            ts = data.get("cached_at", "")[:10]
+            return f"💾 Кэш: {count} ссылок  ({ts})"
+        except Exception:
+            return "💾 Кэш: пусто"
+
+    def update_cache_info(self) -> None:
+        """Обновляет метку после сохранения кэша."""
+        self.cache_info_label.configure(text=self._get_cache_info())
+
     def _on_start_click(self):
         """Обработчик нажатия Start."""
         self.start_btn.configure(state="disabled")
@@ -836,6 +983,19 @@ class NetPrivacyApp(ctk.CTk):
         self._active_tasks = []  # Храним задачи для отмены при STOP
         
         self._build_ui()
+
+        # Локальный сервер подписок: 127.0.0.1:54321/sub
+        self.sub_server = LocalSubscriptionServer(
+            data_provider=lambda: list(self.current_results)
+        )
+        # Запускаем сервер в фоне, не блокируя UI
+        self.async_bridge.run_async(self.sub_server.start())
+        # Можно добавить легкий лог после старта (необязательно)
+        async def _notify_started():
+            ok = await self.sub_server.wait_until_started(1.5)
+            if ok:
+                await self.log("[SUB] Local subscription server: http://127.0.0.1:54321/sub")
+        self.async_bridge.run_async(_notify_started())
         
         # Проверка pyperclip
         import sys
@@ -925,9 +1085,10 @@ class NetPrivacyApp(ctk.CTk):
         self.best_config_panel = BestConfigPanel(
             self.info_frame,
             fg_color=("#1A1A2E", "#1A1A2E"),
-            width=350
+            width=300
         )
-        self.best_config_panel.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+        # Не расширяем по ширине, чтобы панель оставалась узкой
+        self.best_config_panel.pack(side="right", fill="y", expand=False, padx=5, pady=5)
     
     def _start_verification(self, concurrency: int):
         """Запускает процесс верификации."""
@@ -1021,43 +1182,87 @@ class NetPrivacyApp(ctk.CTk):
         
         self.log_panel.add_log(f"Loaded {len(sources)} sources", "info")
         
-        async with aiohttp.ClientSession() as session:
-            for source in sources:
-                if self._stop_requested:
-                    break
-                
-                # Проверяем отмену задачи
-                try:
-                    asyncio.current_task().cancelled()
-                except asyncio.CancelledError:
-                    break
-                
-                if is_proxy_link(source):
-                    all_links.append(source)
-                    self.log_panel.add_log(f"Direct link added: {source[:50]}...", "debug")
-                    continue
-                
-                if source.startswith(("http://", "https://")):
+        source_mode = self.control_panel.get_source_mode()  # "auto" | "online" | "cache" | "parse"
+        remote_links_fetched: List[str] = []
+
+        if source_mode == "cache":
+            self.log_panel.add_log("📦 Source mode: CACHE (offline)", "info")
+            cached = _load_links_cache()
+            if cached:
+                all_links.extend(cached)
+                self.log_panel.add_log(f"Loaded {len(cached)} links from cache.", "info")
+            else:
+                self.log_panel.add_log("Cache is empty! Run in Auto / Online mode first.", "error")
+        elif source_mode == "parse":
+            # Независимый парсер: используем те же источники, что в sources.txt
+            self.log_panel.add_log("🧩 Parse mode: parsing sources...", "info")
+            parsed = await fetch_and_parse(sources, concurrency=min(self.semaphore_limit, 32))
+            if not parsed:
+                self.log_panel.add_log("Parser returned no links", "error")
+                return []
+            all_links.extend(parsed)
+            self.log_panel.add_log(f"Parser collected {len(parsed)} links", "success")
+        else:
+            async with aiohttp.ClientSession() as session:
+                for source in sources:
+                    if self._stop_requested:
+                        break
+
+                    # Проверяем отмену задачи
                     try:
-                        self.log_panel.add_log(f"Loading: {source[:60]}...", "info")
-                        async with session.get(source, timeout=15) as resp:
-                            if resp.status != 200:
-                                self.log_panel.add_log(f"HTTP {resp.status}: {source[:50]}", "error")
-                                continue
-                            
-                            text = await resp.text()
-                            full_links = []
-                            for match in PROXY_REGEX.finditer(text):
-                                full_links.append(match.group(0))
-                            
-                            unique_links = list(set(full_links))
-                            all_links.extend(unique_links)
-                            self.log_panel.add_log(f"Found {len(unique_links)} links from {source[:50]}...", "success")
+                        asyncio.current_task().cancelled()
                     except asyncio.CancelledError:
                         break
-                    except Exception as e:
-                        self.log_panel.add_log(f"Error loading {source[:50]}: {e}", "error")
-        
+
+                    if is_proxy_link(source):
+                        all_links.append(source)
+                        self.log_panel.add_log(f"Direct link added: {source[:50]}...", "debug")
+                        continue
+
+                    if source.startswith(("http://", "https://")):
+                        try:
+                            self.log_panel.add_log(f"Loading: {source[:60]}...", "info")
+                            async with session.get(source, timeout=15) as resp:
+                                if resp.status != 200:
+                                    self.log_panel.add_log(f"HTTP {resp.status}: {source[:50]}", "error")
+                                    continue
+
+                                text = await resp.text()
+                                full_links = []
+                                for match in PROXY_REGEX.finditer(text):
+                                    full_links.append(match.group(0))
+
+                                unique_links = list(set(full_links))
+                                all_links.extend(unique_links)
+                                remote_links_fetched.extend(unique_links)
+                                self.log_panel.add_log(f"Found {len(unique_links)} links from {source[:50]}...", "success")
+                        except asyncio.CancelledError:
+                            break
+                        except Exception as e:
+                            self.log_panel.add_log(f"Error loading {source[:50]}: {e}", "error")
+
+            if remote_links_fetched:
+                _save_links_cache(remote_links_fetched)
+                self.control_panel.update_cache_info()
+                self.log_panel.add_log(
+                    f"Cache updated: {len(remote_links_fetched)} remote links saved.", "info"
+                )
+            elif source_mode == "auto":
+                cached = _load_links_cache()
+                if cached:
+                    all_links.extend(cached)
+                    self.log_panel.add_log(
+                        f"GitHub unavailable — loaded {len(cached)} links from cache.", "warning"
+                    )
+                else:
+                    self.log_panel.add_log(
+                        "No remote links fetched and no cache available.", "error"
+                    )
+            else:  # online — без фоллбэка на кэш
+                self.log_panel.add_log(
+                    "🌐 Online mode: remote sources unavailable. Check your connection.", "error"
+                )
+
         # Дедупликация
         all_links = list(dict.fromkeys(all_links))
         
@@ -1126,6 +1331,11 @@ class NetPrivacyApp(ctk.CTk):
         
         if result.get("is_high_reliability"):
             self.best_config_panel.update_config(result)
+        # Обновляем кэш результатов, чтобы сервер /sub видел актуальные данные
+        try:
+            self.current_results.append(result)
+        except Exception:
+            pass
     
     def _save_results_to_file(self, results: list):
         """Сохраняет результаты в файл."""
@@ -1176,6 +1386,11 @@ class NetPrivacyApp(ctk.CTk):
     def on_closing(self):
         """Обработчик закрытия окна."""
         self._stop_requested = True
+        # Останавливаем локальный сервер подписок
+        try:
+            self.async_bridge.run_async(self.sub_server.stop())
+        except Exception:
+            pass
         self.async_bridge.stop()
         self.destroy()
 
