@@ -4,10 +4,12 @@ import base64
 import json
 import os
 import platform
+import random
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from typing import Callable, Optional
@@ -28,7 +30,17 @@ class LogicVerifier:
         self._active_processes: list = []  # Список активных процессов для принудительной остановки
 
     def get_free_port(self):
-        """Safely find a free port."""
+        """Find a free port in 20000-60000 to avoid conflicts with VPN clients."""
+        for _ in range(200):
+            port = random.randint(20000, 60000)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+                    s.bind(("127.0.0.1", port))
+                    return port
+            except OSError:
+                continue
+        # Fallback: let OS assign any free port
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
             return s.getsockname()[1]
@@ -69,7 +81,7 @@ class LogicVerifier:
             if protocol in ["vless", "trojan", "vmess"]:
                 vnext = outbound.get("settings", {}).get("vnext", [{}])[0]
                 return vnext.get("address", ""), vnext.get("port", 0)
-            elif protocol == "ss":
+            elif protocol in ("ss", "shadowsocks"):
                 servers = outbound.get("settings", {}).get("servers", [{}])[0]
                 return servers.get("address", ""), servers.get("port", 0)
         except:
@@ -95,7 +107,9 @@ class LogicVerifier:
             name = unquote(parsed.fragment) if parsed.fragment else "Unknown Node"
 
             qs = dict(parse_qsl(parsed.query))
-            outbound = {"protocol": ptype, "settings": {}, "streamSettings": {}}
+            # Xray uses "shadowsocks" as protocol name; "ss" is only the URL scheme
+            xray_protocol = "shadowsocks" if ptype == "ss" else ptype
+            outbound = {"protocol": xray_protocol, "settings": {}, "streamSettings": {}}
 
             # === VLESS / Trojan Parsing ===
             if ptype in ["vless", "trojan"]:
@@ -242,40 +256,74 @@ class LogicVerifier:
 
             # === Shadowsocks (SS) Parsing ===
             elif ptype == "ss":
-                # SS формат: ss://method:password@host:port#name
-                # или ss://YmFzZTY0ZW5jb2RlZA==@host:port#name
-                if "@" not in parsed.netloc:
-                    return None, "Missing auth@host in SS URL"
-                
-                auth, addr = parsed.netloc.split("@", 1)
-                
-                # Handle IPv6 and ports
-                if addr.startswith("["):
-                    if "]:" in addr:
+                # Three possible formats:
+                # (A) SIP002 plain:   ss://method:password@host:port[#name]
+                # (B) SIP002 b64auth: ss://BASE64(method:password)@host:port[#name]
+                # (C) Legacy full:    ss://BASE64(method:password@host:port)[#name]
+                if "@" in parsed.netloc:
+                    # Formats A and B: split on last @
+                    auth, addr = parsed.netloc.split("@", 1)
+
+                    # addr → host + port
+                    if addr.startswith("["):
+                        if "]:" in addr:
+                            host, h_port = addr.rsplit(":", 1)
+                            host = host[1:-1]
+                        else:
+                            host = addr[1:-1]
+                            h_port = "8388"
+                    elif ":" in addr:
                         host, h_port = addr.rsplit(":", 1)
-                        host = host[1:-1]
                     else:
-                        host = addr[1:-1]
+                        host = addr
                         h_port = "8388"
-                elif ":" in addr:
-                    host, h_port = addr.rsplit(":", 1)
+
+                    # auth → method + password (base64 or plain)
+                    method, password = "aes-256-gcm", auth
+                    try:
+                        padding = (4 - len(auth) % 4) % 4
+                        decoded_auth = base64.b64decode(auth + "=" * padding).decode("utf-8")
+                        if ":" in decoded_auth:
+                            method, password = decoded_auth.split(":", 1)
+                    except Exception:
+                        if ":" in auth:
+                            method, password = auth.split(":", 1)
+
                 else:
-                    host = addr
-                    h_port = "8388"
-                
-                # Auth может быть в base64 или plain text
-                try:
-                    # Пытаемся декодировать base64
-                    padding = (4 - len(auth) % 4) % 4
-                    decoded = base64.b64decode(auth + "=" * padding).decode("utf-8")
-                    method, password = decoded.split(":", 1)
-                except:
-                    # Если не base64, пробуем plain text method:password
-                    if ":" in auth:
-                        method, password = auth.split(":", 1)
+                    # Format C: legacy — the entire payload after ss:// is base64
+                    # reassemble in case urlparse split on a "/" inside base64
+                    raw = parsed.netloc
+                    if parsed.path and parsed.path not in ("/", ""):
+                        raw += parsed.path
+                    raw = raw.rstrip("=")  # strip existing padding before re-adding
+                    try:
+                        padding = (4 - len(raw) % 4) % 4
+                        full_decoded = base64.b64decode(raw + "=" * padding).decode("utf-8")
+                    except Exception as e:
+                        return None, f"SS base64 decode error: {e}"
+
+                    if "@" not in full_decoded:
+                        return None, "Invalid SS URL: no auth@host after decoding"
+
+                    auth_part, addr = full_decoded.split("@", 1)
+                    if ":" not in auth_part:
+                        return None, "Invalid SS URL: missing method:password"
+
+                    method, password = auth_part.split(":", 1)
+
+                    if addr.startswith("["):
+                        if "]:" in addr:
+                            host, h_port = addr.rsplit(":", 1)
+                            host = host[1:-1]
+                        else:
+                            host = addr[1:-1]
+                            h_port = "8388"
+                    elif ":" in addr:
+                        host, h_port = addr.rsplit(":", 1)
                     else:
-                        method, password = "aes-256-gcm", auth
-                
+                        host = addr
+                        h_port = "8388"
+
                 outbound["settings"] = {
                     "servers": [
                         {
@@ -290,7 +338,7 @@ class LogicVerifier:
             return {
                 "log": {"loglevel": "error"},
                 "inbounds": [
-                    {"port": port, "protocol": "socks", "settings": {"udp": True}}
+                    {"listen": "127.0.0.1", "port": port, "protocol": "socks", "settings": {"udp": True}}
                 ],
                 "outbounds": [outbound, {"protocol": "freedom", "tag": "direct"}],
             }, name
@@ -589,13 +637,18 @@ class LogicVerifier:
         """Context manager for Xray process with guaranteed cleanup."""
         proc = None
         try:
+            # Windows: hide console window to avoid cluttering desktop
+            _creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            if sys.platform == "win32":
+                _creationflags |= subprocess.CREATE_NO_WINDOW
+                _creationflags |= 0x00004000  # BELOW_NORMAL_PRIORITY_CLASS
             proc = await asyncio.create_subprocess_exec(
                 self.bin_path,
                 "-c",
                 config_path,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                creationflags=_creationflags,
             )
             # Добавляем в список активных процессов
             self._active_processes.append(proc)
@@ -632,7 +685,7 @@ class LogicVerifier:
                 await self._log(f"[SKIP] Empty protocol | {link_preview}")
                 return None
 
-            temp_dir = os.path.join("app", "temp_configs")
+            temp_dir = os.path.join(tempfile.gettempdir(), "npvt_configs")
             os.makedirs(temp_dir, exist_ok=True)
             config_path = os.path.join(temp_dir, f"temp_{port}.json")
             try:

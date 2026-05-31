@@ -1,3 +1,10 @@
+#  Copyright (C) 2026  @TheFirSStYfOreVer
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+
 """
 NetPrivacy Verification Tool - Modern GUI Edition
 Powered by CustomTkinter
@@ -41,7 +48,41 @@ ctk.set_default_color_theme("dark-blue")
 # Константы
 CONCURRENT_LIMIT = 50
 PROXY_REGEX = re.compile(r'(vless|vmess|trojan|ss)://[^\s<>"\']+', re.IGNORECASE)
-LINKS_CACHE_PATH = os.path.join("app", "data", "links_cache.json")
+
+def _get_runtime_base() -> str:
+    try:
+        if getattr(sys, 'frozen', False):
+            base = getattr(sys, '_MEIPASS', None)
+            if base and os.path.isdir(base):
+                return os.path.abspath(base)
+            return os.path.abspath(os.path.dirname(sys.executable))
+        # running from sources: this file is app/main.py
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    except Exception:
+        return os.getcwd()
+
+def _get_user_base() -> str:
+    try:
+        if sys.platform == 'win32':
+            base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~\\AppData\\Local')
+        else:
+            base = os.path.expanduser('~/.local/share')
+        path = os.path.join(base, 'NetPrivacyTool')
+        os.makedirs(path, exist_ok=True)
+        return path
+    except Exception:
+        return os.getcwd()
+
+RUNTIME_BASE = _get_runtime_base()
+USER_BASE = _get_user_base()
+LINKS_CACHE_PATH = os.path.join(USER_BASE, "links_cache.json")
+# Sources path: check embedded (app/data/) first, then portable layout (data/)
+_sources_candidates = [
+    os.path.join(RUNTIME_BASE, "app", "data", "sources.txt"),
+    os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else RUNTIME_BASE, "data", "sources.txt"),
+]
+SOURCES_PATH = next((p for p in _sources_candidates if os.path.isfile(p)), _sources_candidates[0])
+RESULTS_PATH = os.path.join(USER_BASE, "verified_nodes.txt")
 
 
 def is_proxy_link(text):
@@ -757,13 +798,11 @@ class BestConfigPanel(ctk.CTkFrame):
 
             opened_ok = False
 
-            # Популярные варианты диплинков, ожидающие ссылку (subscription URL)
+            # 1. Try happ:// deeplinks (correct format: happ://add/<url>)
             candidates = [
-                f"happ:add?url={encoded}",
-                f"happ://add?url={encoded}",
-                f"hiddify://import?url={encoded}",
-                # Фолбэк — открыть сам URL в браузере, чтобы пользователь скопировал
-                sub_url,
+                f"happ://add/{sub_url}",
+                f"hiddify://install-sub?url={encoded}#NetPrivacy",
+                f"hiddify://install-config?url={encoded}#NetPrivacy",
             ]
 
             for u in candidates:
@@ -774,8 +813,34 @@ class BestConfigPanel(ctk.CTkFrame):
                 except Exception:
                     continue
 
+            # 2. Fallback: copy subscription URL to clipboard and open in browser
             if not opened_ok:
-                raise Exception("No handler for subscription deeplink/url")
+                try:
+                    if HAS_PYPERCLIP:
+                        pyperclip.copy(sub_url)
+                    elif sys.platform == "win32":
+                        import ctypes
+                        CF_UNICODETEXT = 13
+                        if ctypes.windll.user32.OpenClipboard(0):
+                            try:
+                                ctypes.windll.user32.EmptyClipboard()
+                                size = (len(sub_url) + 1) * 2
+                                handle = ctypes.windll.kernel32.GlobalAlloc(0x0002 | 0x0040, size)
+                                if handle:
+                                    ptr = ctypes.windll.kernel32.GlobalLock(handle)
+                                    if ptr:
+                                        ctypes.memmove(ptr, sub_url.encode('utf-16-le'), len(sub_url) * 2)
+                                        ctypes.windll.kernel32.GlobalUnlock(handle)
+                                    ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle)
+                            finally:
+                                ctypes.windll.user32.CloseClipboard()
+                    _open(sub_url)
+                    opened_ok = True
+                except Exception:
+                    pass
+
+            if not opened_ok:
+                raise Exception("No handler found")
             self.open_btn.configure(text="✅ Opened", fg_color=("#00FF7F", "#00FF7F"))
             self.after(2000, lambda: self.open_btn.configure(
                 text="🌐 Open in App (happ://)",
@@ -1165,13 +1230,28 @@ class NetPrivacyApp(ctk.CTk):
     
     async def _do_verification(self):
         """Внутренняя логика верификации."""
-        src_path = os.path.join("app", "data", "sources.txt")
+        src_path = SOURCES_PATH
         
         if not os.path.exists(src_path):
             self.log_panel.add_log("ERROR: app/data/sources.txt not found!", "error")
             return []
         
         self.scanner = LogicVerifier(tui=self)
+        # Поддержка PyInstaller runtime путей для xray.exe.
+        # Portable/source: RUNTIME_BASE/_MEIPASS/app/bin/xray.exe
+        # Installed via Inno Setup: exe at {app}/dist/main.exe, xray at {app}/app/bin/xray.exe
+        _exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else RUNTIME_BASE
+        _xray_candidates = [
+            os.path.join(RUNTIME_BASE, "app", "bin", "xray.exe"),             # _MEIPASS / source
+            os.path.join(_exe_dir, "core", "bin", "np_engine.exe"),           # installed (renamed)
+            os.path.join(_exe_dir, "core", "bin", "xray.exe"),               # portable layout
+            os.path.join(_exe_dir, "app", "bin", "xray.exe"),                # same-dir layout
+            os.path.join(os.path.dirname(_exe_dir), "app", "bin", "xray.exe"),  # installed fallback
+        ]
+        for xr_bin in _xray_candidates:
+            if os.path.isfile(xr_bin):
+                self.scanner.bin_path = xr_bin
+                break
         all_links = []
         
         # Читаем источники
@@ -1228,8 +1308,18 @@ class NetPrivacyApp(ctk.CTk):
                                     continue
 
                                 text = await resp.text()
+                                # Many subscription sources return base64-encoded content
+                                parse_text = text
+                                if not PROXY_REGEX.search(text):
+                                    try:
+                                        import base64 as _b64
+                                        clean = text.strip()
+                                        pad = (4 - len(clean) % 4) % 4
+                                        parse_text = _b64.b64decode(clean + "=" * pad).decode("utf-8")
+                                    except Exception:
+                                        parse_text = text
                                 full_links = []
-                                for match in PROXY_REGEX.finditer(text):
+                                for match in PROXY_REGEX.finditer(parse_text):
                                     full_links.append(match.group(0))
 
                                 unique_links = list(set(full_links))
@@ -1347,7 +1437,8 @@ class NetPrivacyApp(ctk.CTk):
             ))
             
             # Сохраняем
-            with open(os.path.join("app", "data", "verified_nodes.txt"), "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
+            with open(RESULTS_PATH, "w", encoding="utf-8") as f:
                 for r in results:
                     if r.get("is_high_reliability"):
                         gemini_tag = " | Gemini_Ready" if r.get("gemini_ready") else ""
@@ -1360,7 +1451,7 @@ class NetPrivacyApp(ctk.CTk):
                         f.write(f"# {r.get('accessibility')} | Avg: {r.get('avg_resource_rtt')}ms | {r['name']}{gemini_tag}\n")
                         f.write(f"{r['link']}\n\n")
             
-            self.log_panel.add_log(f"Results saved to data/verified_nodes.txt", "success")
+            self.log_panel.add_log(f"Results saved to {RESULTS_PATH}", "success")
         except Exception as e:
             self.log_panel.add_log(f"Save error: {e}", "error")
     
@@ -1383,10 +1474,18 @@ class NetPrivacyApp(ctk.CTk):
         """Устанавливает текущую конфигурацию для отображения."""
         self.after(0, lambda c=config, n=name: self.current_node_panel.update_node(c, n))
     
+    def _kill_scanner_processes(self):
+        """Гарантированно убивает все дочерние процессы xray."""
+        try:
+            if self.scanner:
+                self.scanner.kill_all_processes()
+        except Exception:
+            pass
+
     def on_closing(self):
         """Обработчик закрытия окна."""
         self._stop_requested = True
-        # Останавливаем локальный сервер подписок
+        self._kill_scanner_processes()
         try:
             self.async_bridge.run_async(self.sub_server.stop())
         except Exception:
@@ -1397,8 +1496,10 @@ class NetPrivacyApp(ctk.CTk):
 
 def main():
     """Точка входа."""
+    import atexit
     app = NetPrivacyApp()
     app.protocol("WM_DELETE_WINDOW", app.on_closing)
+    atexit.register(app._kill_scanner_processes)
     
     print("""
 ╔══════════════════════════════════════════════════════════════╗
