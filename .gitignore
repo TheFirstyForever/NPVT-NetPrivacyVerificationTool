@@ -27,6 +27,12 @@ app/temp_configs/
 # Local external sources (not tracked)
 goida-vpn-configs-main/
 
+# Build artifacts
+build/
+dist/
+Output/
+*.spec
+
 # OS files
 .DS_Store
 Thumbs.db
