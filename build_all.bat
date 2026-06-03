@@ -44,6 +44,8 @@ python -m PyInstaller ^
     --noconsole ^
     --name NetPrivacyTool ^
     --icon "%APPICON%" ^
+    --collect-data flet ^
+    --collect-submodules flet ^
     --add-data "%STAGE_BIN%;core/bin" ^
     --add-data "%APPDATA_DIR%;app/data" ^
     --add-data "%APPASSETS%;app/assets" ^
