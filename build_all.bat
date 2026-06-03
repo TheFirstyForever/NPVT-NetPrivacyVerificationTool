@@ -1,11 +1,38 @@
 @echo off
 chcp 65001 >nul
+
+if /i "%~1"=="--_logged" goto :NPVT_RUN
+
+set "ROOT=%~dp0"
+set "LOG_DIR=%ROOT%build"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+set "LOG_FILE=%LOG_DIR%\build_all.log"
+
+echo [INFO] Full build log will be saved to: %LOG_FILE%
+echo.
+
+call "%~f0" --_logged > "%LOG_FILE%" 2>&1
+set "RET=%ERRORLEVEL%"
+
+type "%LOG_FILE%"
+echo.
+echo =========================================
+echo [INFO] Build finished with exit code: %RET%
+echo [INFO] Log file: %LOG_FILE%
+echo =========================================
+pause
+exit /b %RET%
+
+:NPVT_RUN
+shift
+
 setlocal
 
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 set "RELEASE_DIR=%ROOT%release"
+set "LOG_MODE=1"
 
 set "EXIT_CODE=0"
 set "EXE_OK=0"
@@ -83,7 +110,7 @@ set "EXE_OK=1"
 echo.
 
 :: === STEP 2: Create portable build ===
-echo [2/4] Creating portable build in release\NPVT_Portable\...
+echo [2a/4] Creating portable build in release\NPVT_Portable\...
 
 set "PORTABLE_DIR=%RELEASE_DIR%\NPVT_Portable"
 
@@ -111,12 +138,9 @@ robocopy "%ROOT%app\assets" "%PORTABLE_DIR%\assets"     /E /NFL /NDL /NJH /NJS >
 :: Copy README if present
 if exist "%ROOT%README.md" copy /y "%ROOT%README.md" "%PORTABLE_DIR%\README.md" >nul
 
-:: Copy recommended VPN client folder if present (use PowerShell for Unicode folder name)
-powershell -NoProfile -Command "$src='%ROOT%'; $dst='%PORTABLE_DIR%'; $fn=[char]0x0420+[char]0x0415+[char]0x041A+[char]0x041E+[char]0x041C+[char]0x0415+[char]0x041D+[char]0x0414+[char]0x041E+[char]0x0412+[char]0x0410+[char]0x041D+[char]0x041D+[char]0x0410+[char]0x042F+'_'+[char]0x041F+[char]0x0420+[char]0x041E+[char]0x041A+[char]0x0421+[char]0x0418+'_('+[char]0x0434+[char]0x043B+[char]0x044F+'_'+[char]0x043F+[char]0x043E+[char]0x043B+[char]0x0443+[char]0x0447+[char]0x0435+[char]0x043D+[char]0x043D+[char]0x043E+[char]0x0439+'_'+[char]0x0441+[char]0x0441+[char]0x044B+[char]0x043B+[char]0x043A+[char]0x0438+'_'+[char]0x043D+[char]0x0430+'_'+[char]0x043A+[char]0x043E+[char]0x043D+[char]0x0444+[char]0x0438+[char]0x0433+[char]0x0443+[char]0x0440+[char]0x0430+[char]0x0446+[char]0x0438+[char]0x044E+')'; $s=Join-Path $src $fn; $d=Join-Path $dst $fn; if(Test-Path $s){Copy-Item $s $d -Recurse -Force}" 2>nul
-
 echo [OK] Portable build ready: release\NPVT_Portable\
 
-echo [2/4] Packing Portable ZIP...
+echo [2b/4] Packing Portable ZIP...
 python tools\make_zip.py "%PORTABLE_DIR%" "%RELEASE_DIR%\NPVT_Portable.zip"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Portable ZIP build failed.
@@ -238,8 +262,10 @@ set "SOURCE_OK=1"
 :NPVT_END
 
 :: === Open output folders ===
-echo Opening release folder...
-explorer "%RELEASE_DIR%"
+if not "%LOG_MODE%"=="1" (
+    echo Opening release folder...
+    explorer "%RELEASE_DIR%"
+)
 
 echo.
 echo =========================================
@@ -254,5 +280,5 @@ if exist "%RELEASE_DIR%\NetPrivacyTool_Setup.exe" (
 echo   Clean source ZIP: release\NPVT_Source.zip
 echo =========================================
 
-pause
+if not "%LOG_MODE%"=="1" pause
 endlocal & exit /b %EXIT_CODE%
