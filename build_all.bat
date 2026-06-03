@@ -7,6 +7,15 @@ cd /d "%ROOT%"
 
 set "RELEASE_DIR=%ROOT%release"
 
+set "PS=powershell -NoProfile -ExecutionPolicy Bypass -Command"
+
+where python >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Python not found in PATH. Install Python 3.8+ and check "Add Python to PATH".
+    pause
+    exit /b 1
+)
+
 echo =========================================
 echo   NetPrivacy Tool - Full Build Pipeline
 echo =========================================
@@ -85,6 +94,9 @@ robocopy "%STAGE_BIN%"      "%PORTABLE_DIR%\core\bin"   /E /NFL /NDL /NJH /NJS >
 :: data\ (sources.txt etc.)
 robocopy "%ROOT%app\data"   "%PORTABLE_DIR%\data"       /E /NFL /NDL /NJH /NJS /XF "links_cache.json" "temp_*.json" "*.tmp" "verified_nodes.txt" >nul
 
+:: assets\ (icon, optional wizard images)
+robocopy "%ROOT%app\assets" "%PORTABLE_DIR%\assets"     /E /NFL /NDL /NJH /NJS >nul
+
 :: Copy README if present
 if exist "%ROOT%README.md" copy /y "%ROOT%README.md" "%PORTABLE_DIR%\README.md" >nul
 
@@ -94,7 +106,7 @@ powershell -NoProfile -Command "$src='%ROOT%'; $dst='%PORTABLE_DIR%'; $fn=[char]
 echo [OK] Portable build ready: dist\portable\
 
 echo [2/4] Packing Portable ZIP...
-powershell -NoProfile -Command "$zip=Join-Path '%RELEASE_DIR%' 'NPVT_Portable.zip'; if(Test-Path $zip){Remove-Item $zip -Force}; Compress-Archive -Path '%PORTABLE_DIR%\*' -DestinationPath $zip -Force" >nul
+%PS% "$ErrorActionPreference='Stop'; $zip=Join-Path '%RELEASE_DIR%' 'NPVT_Portable.zip'; if(Test-Path $zip){Remove-Item $zip -Force}; Compress-Archive -Path '%PORTABLE_DIR%\*' -DestinationPath $zip -Force; if(!(Test-Path $zip)){ throw 'Portable ZIP not created' }" >nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Portable ZIP build failed.
     pause
@@ -109,35 +121,54 @@ echo [3/4] Building Inno Setup installer (installer_config.iss)...
 set "INSTALLERS_DIR=%ROOT%dist\installers"
 if not exist "%INSTALLERS_DIR%" mkdir "%INSTALLERS_DIR%"
 
-set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if not exist "%ISCC%" (
-    echo [ERROR] Inno Setup compiler not found: %ISCC%
-    pause
-    exit /b 1
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 5\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 5\ISCC.exe"
+if not defined ISCC for /f "delims=" %%I in ('where ISCC.exe 2^>nul') do (
+    set "ISCC=%%I"
+    goto :NPVT_ISCC_FOUND
+)
+
+if not defined ISCC for %%K in (
+    "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1"
+    "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1"
+    "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 5_is1"
+    "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 5_is1"
+) do (
+    for /f "tokens=2*" %%A in ('reg query %%~K /v InstallLocation 2^>nul ^| find /i "InstallLocation"') do (
+        if exist "%%B\ISCC.exe" set "ISCC=%%B\ISCC.exe"
+    )
+)
+:NPVT_ISCC_FOUND
+if not defined ISCC (
+    echo [WARN] Inno Setup compiler (ISCC.exe) not found. Skipping installer build.
+    goto :NPVT_AFTER_INNO
 )
 if not exist "%ROOT%installer_config.iss" (
     echo [ERROR] installer_config.iss not found in project root.
     pause
-    exit /b 1
+    goto :NPVT_AFTER_INNO
 )
 
 "%ISCC%" /O"%INSTALLERS_DIR%" "%ROOT%installer_config.iss"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Inno Setup build failed.
-    pause
-    exit /b 1
+    goto :NPVT_AFTER_INNO
 )
 
 echo [OK] Inno Setup installer built.
 
 if exist "%INSTALLERS_DIR%\NetPrivacyTool_Setup.exe" copy /y "%INSTALLERS_DIR%\NetPrivacyTool_Setup.exe" "%RELEASE_DIR%\NetPrivacyTool_Setup.exe" >nul
 if not exist "%RELEASE_DIR%\NetPrivacyTool_Setup.exe" (
-    echo [ERROR] release\NetPrivacyTool_Setup.exe not found after Inno build.
-    pause
-    exit /b 1
+    echo [WARN] release\NetPrivacyTool_Setup.exe not found after Inno build.
+    goto :NPVT_AFTER_INNO
 )
 echo [OK] release\NetPrivacyTool_Setup.exe ready.
 echo.
+
+:NPVT_AFTER_INNO
 
 :: === STEP 4: Create clean source ZIP ===
 echo [4/4] Creating clean source ZIP...
@@ -161,9 +192,15 @@ copy /y "%ROOT%.gitignore" "%SRC_STAGE%\.gitignore" >nul
 del /q "%SRC_STAGE%\app\data\links_cache.json" >nul 2>&1
 del /q "%SRC_STAGE%\app\data\verified_nodes.txt" >nul 2>&1
 
-powershell -NoProfile -Command "$zip=Join-Path '%RELEASE_DIR%' 'NPVT_Source.zip'; if(Test-Path $zip){Remove-Item $zip -Force}; Compress-Archive -Path '%SRC_STAGE%\*' -DestinationPath $zip -Force" >nul
+%PS% "$ErrorActionPreference='Stop'; $zip=Join-Path '%RELEASE_DIR%' 'NPVT_Source.zip'; if(Test-Path $zip){Remove-Item $zip -Force}; Compress-Archive -Path '%SRC_STAGE%\*' -DestinationPath $zip -Force; if(!(Test-Path $zip)){ throw 'Source ZIP not created' }" >nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Clean source ZIP build failed.
+    pause
+    exit /b 1
+)
+
+if not exist "%RELEASE_DIR%\NPVT_Source.zip" (
+    echo [ERROR] release\NPVT_Source.zip not found after build.
     pause
     exit /b 1
 )
@@ -179,10 +216,14 @@ echo =========================================
 echo   BUILD COMPLETE
 echo   Portable folder : dist\portable\NetPrivacyTool.exe
 echo   Portable ZIP    : release\NPVT_Portable.zip
-echo   Installer (Inno): release\NetPrivacyTool_Setup.exe
+if exist "%RELEASE_DIR%\NetPrivacyTool_Setup.exe" (
+    echo   Installer (Inno): release\NetPrivacyTool_Setup.exe
+) else (
+    echo   Installer (Inno): (skipped or failed)
+)
 echo   Clean source ZIP: release\NPVT_Source.zip
 echo =========================================
 
 pause
-exit /b 0
 endlocal
+exit /b 0
