@@ -43,7 +43,7 @@ NPVT — это инструмент для **быстрой и корректн
 
 - **Installer**: `NetPrivacyTool_Setup.exe`
 - **Portable**: `NPVT_Portable.zip`
-- **Clean Source**: `NPVT_Source.zip`
+- **Source code**: `Source code.zip`
 
 ## Установка и запуск
 
