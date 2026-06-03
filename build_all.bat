@@ -7,8 +7,6 @@ cd /d "%ROOT%"
 
 set "RELEASE_DIR=%ROOT%release"
 
-set "PS=powershell -NoProfile -ExecutionPolicy Bypass -Command"
-
 where python >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Python not found in PATH. Install Python 3.8+ and check "Add Python to PATH".
@@ -106,9 +104,14 @@ powershell -NoProfile -Command "$src='%ROOT%'; $dst='%PORTABLE_DIR%'; $fn=[char]
 echo [OK] Portable build ready: dist\portable\
 
 echo [2/4] Packing Portable ZIP...
-%PS% "$ErrorActionPreference='Stop'; $zip=Join-Path '%RELEASE_DIR%' 'NPVT_Portable.zip'; if(Test-Path $zip){Remove-Item $zip -Force}; Compress-Archive -Path '%PORTABLE_DIR%\*' -DestinationPath $zip -Force; if(!(Test-Path $zip)){ throw 'Portable ZIP not created' }" >nul
+python tools\make_zip.py "%PORTABLE_DIR%" "%RELEASE_DIR%\NPVT_Portable.zip" >nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Portable ZIP build failed.
+    pause
+    exit /b 1
+)
+if not exist "%RELEASE_DIR%\NPVT_Portable.zip" (
+    echo [ERROR] release\NPVT_Portable.zip not found after build.
     pause
     exit /b 1
 )
@@ -192,7 +195,7 @@ copy /y "%ROOT%.gitignore" "%SRC_STAGE%\.gitignore" >nul
 del /q "%SRC_STAGE%\app\data\links_cache.json" >nul 2>&1
 del /q "%SRC_STAGE%\app\data\verified_nodes.txt" >nul 2>&1
 
-%PS% "$ErrorActionPreference='Stop'; $zip=Join-Path '%RELEASE_DIR%' 'NPVT_Source.zip'; if(Test-Path $zip){Remove-Item $zip -Force}; Compress-Archive -Path '%SRC_STAGE%\*' -DestinationPath $zip -Force; if(!(Test-Path $zip)){ throw 'Source ZIP not created' }" >nul
+python tools\make_zip.py "%SRC_STAGE%" "%RELEASE_DIR%\NPVT_Source.zip" >nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Clean source ZIP build failed.
     pause
