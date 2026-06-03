@@ -7,6 +7,12 @@ cd /d "%ROOT%"
 
 set "RELEASE_DIR=%ROOT%release"
 
+set "EXIT_CODE=0"
+set "EXE_OK=0"
+set "PORTABLE_OK=0"
+set "INSTALLER_OK=0"
+set "SOURCE_OK=0"
+
 where python >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Python not found in PATH. Install Python 3.8+ and check "Add Python to PATH".
@@ -62,29 +68,36 @@ python -m PyInstaller ^
     app\main.py
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] PyInstaller build failed.
-    pause
-    exit /b 1
+    set "EXIT_CODE=1"
+    goto :NPVT_STEP4
 )
 
 if not exist "dist\NetPrivacyTool.exe" (
     echo [ERROR] dist\NetPrivacyTool.exe still not found after build.
-    pause
-    exit /b 1
+    set "EXIT_CODE=1"
+    goto :NPVT_STEP4
 )
 
 echo [OK] dist\NetPrivacyTool.exe ready.
+set "EXE_OK=1"
 echo.
 
 :: === STEP 2: Create portable build ===
-echo [2/4] Creating portable build in dist\portable\...
+echo [2/4] Creating portable build in release\NPVT_Portable\...
 
-set "PORTABLE_DIR=%ROOT%dist\portable"
+set "PORTABLE_DIR=%RELEASE_DIR%\NPVT_Portable"
 
 if exist "%PORTABLE_DIR%" rd /s /q "%PORTABLE_DIR%"
 mkdir "%PORTABLE_DIR%"
 
 :: Rename EXE to NetPrivacyTool.exe
-copy /y "%ROOT%dist\NetPrivacyTool.exe" "%PORTABLE_DIR%\NetPrivacyTool.exe" >nul
+if "%EXE_OK%"=="1" (
+    copy /y "%ROOT%dist\NetPrivacyTool.exe" "%PORTABLE_DIR%\NetPrivacyTool.exe" >nul
+) else (
+    echo [WARN] Skipping portable build: EXE not available.
+    set "EXIT_CODE=1"
+    goto :NPVT_STEP3
+)
 
 :: core\bin\ (xray + geodata)
 robocopy "%STAGE_BIN%"      "%PORTABLE_DIR%\core\bin"   /E /NFL /NDL /NJH /NJS >nul
@@ -101,27 +114,35 @@ if exist "%ROOT%README.md" copy /y "%ROOT%README.md" "%PORTABLE_DIR%\README.md" 
 :: Copy recommended VPN client folder if present (use PowerShell for Unicode folder name)
 powershell -NoProfile -Command "$src='%ROOT%'; $dst='%PORTABLE_DIR%'; $fn=[char]0x0420+[char]0x0415+[char]0x041A+[char]0x041E+[char]0x041C+[char]0x0415+[char]0x041D+[char]0x0414+[char]0x041E+[char]0x0412+[char]0x0410+[char]0x041D+[char]0x041D+[char]0x0410+[char]0x042F+'_'+[char]0x041F+[char]0x0420+[char]0x041E+[char]0x041A+[char]0x0421+[char]0x0418+'_('+[char]0x0434+[char]0x043B+[char]0x044F+'_'+[char]0x043F+[char]0x043E+[char]0x043B+[char]0x0443+[char]0x0447+[char]0x0435+[char]0x043D+[char]0x043D+[char]0x043E+[char]0x0439+'_'+[char]0x0441+[char]0x0441+[char]0x044B+[char]0x043B+[char]0x043A+[char]0x0438+'_'+[char]0x043D+[char]0x0430+'_'+[char]0x043A+[char]0x043E+[char]0x043D+[char]0x0444+[char]0x0438+[char]0x0433+[char]0x0443+[char]0x0440+[char]0x0430+[char]0x0446+[char]0x0438+[char]0x044E+')'; $s=Join-Path $src $fn; $d=Join-Path $dst $fn; if(Test-Path $s){Copy-Item $s $d -Recurse -Force}" 2>nul
 
-echo [OK] Portable build ready: dist\portable\
+echo [OK] Portable build ready: release\NPVT_Portable\
 
 echo [2/4] Packing Portable ZIP...
-python tools\make_zip.py "%PORTABLE_DIR%" "%RELEASE_DIR%\NPVT_Portable.zip" >nul
+python tools\make_zip.py "%PORTABLE_DIR%" "%RELEASE_DIR%\NPVT_Portable.zip"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Portable ZIP build failed.
-    pause
-    exit /b 1
+    set "EXIT_CODE=1"
+    goto :NPVT_STEP3
 )
 if not exist "%RELEASE_DIR%\NPVT_Portable.zip" (
     echo [ERROR] release\NPVT_Portable.zip not found after build.
-    pause
-    exit /b 1
+    set "EXIT_CODE=1"
+    goto :NPVT_STEP3
 )
 echo [OK] release\NPVT_Portable.zip ready.
+set "PORTABLE_OK=1"
 echo.
 
 :: === STEP 3: Build Inno Setup installer ===
+:NPVT_STEP3
 echo [3/4] Building Inno Setup installer (installer_config.iss)...
 
-set "INSTALLERS_DIR=%ROOT%dist\installers"
+if "%EXE_OK%" NEQ "1" (
+    echo [WARN] Skipping installer build: EXE not available.
+    set "EXIT_CODE=1"
+    goto :NPVT_STEP4
+)
+
+set "INSTALLERS_DIR=%RELEASE_DIR%"
 if not exist "%INSTALLERS_DIR%" mkdir "%INSTALLERS_DIR%"
 
 set "ISCC="
@@ -158,22 +179,25 @@ if not exist "%ROOT%installer_config.iss" (
 "%ISCC%" /O"%INSTALLERS_DIR%" "%ROOT%installer_config.iss"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Inno Setup build failed.
+    set "EXIT_CODE=1"
     goto :NPVT_AFTER_INNO
 )
 
 echo [OK] Inno Setup installer built.
 
-if exist "%INSTALLERS_DIR%\NetPrivacyTool_Setup.exe" copy /y "%INSTALLERS_DIR%\NetPrivacyTool_Setup.exe" "%RELEASE_DIR%\NetPrivacyTool_Setup.exe" >nul
-if not exist "%RELEASE_DIR%\NetPrivacyTool_Setup.exe" (
+if not exist "%INSTALLERS_DIR%\NetPrivacyTool_Setup.exe" (
     echo [WARN] release\NetPrivacyTool_Setup.exe not found after Inno build.
+    set "EXIT_CODE=1"
     goto :NPVT_AFTER_INNO
 )
 echo [OK] release\NetPrivacyTool_Setup.exe ready.
+set "INSTALLER_OK=1"
 echo.
 
 :NPVT_AFTER_INNO
 
 :: === STEP 4: Create clean source ZIP ===
+:NPVT_STEP4
 echo [4/4] Creating clean source ZIP...
 
 set "SRC_STAGE=%ROOT%build\source_clean"
@@ -195,20 +219,23 @@ copy /y "%ROOT%.gitignore" "%SRC_STAGE%\.gitignore" >nul
 del /q "%SRC_STAGE%\app\data\links_cache.json" >nul 2>&1
 del /q "%SRC_STAGE%\app\data\verified_nodes.txt" >nul 2>&1
 
-python tools\make_zip.py "%SRC_STAGE%" "%RELEASE_DIR%\NPVT_Source.zip" >nul
+python tools\make_zip.py "%SRC_STAGE%" "%RELEASE_DIR%\NPVT_Source.zip"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Clean source ZIP build failed.
-    pause
-    exit /b 1
+    set "EXIT_CODE=1"
+    goto :NPVT_END
 )
 
 if not exist "%RELEASE_DIR%\NPVT_Source.zip" (
     echo [ERROR] release\NPVT_Source.zip not found after build.
-    pause
-    exit /b 1
+    set "EXIT_CODE=1"
+    goto :NPVT_END
 )
 
 echo [OK] release\NPVT_Source.zip ready.
+set "SOURCE_OK=1"
+
+:NPVT_END
 
 :: === Open output folders ===
 echo Opening release folder...
@@ -217,7 +244,7 @@ explorer "%RELEASE_DIR%"
 echo.
 echo =========================================
 echo   BUILD COMPLETE
-echo   Portable folder : dist\portable\NetPrivacyTool.exe
+echo   Portable folder : release\NPVT_Portable\NetPrivacyTool.exe
 echo   Portable ZIP    : release\NPVT_Portable.zip
 if exist "%RELEASE_DIR%\NetPrivacyTool_Setup.exe" (
     echo   Installer (Inno): release\NetPrivacyTool_Setup.exe
@@ -228,5 +255,4 @@ echo   Clean source ZIP: release\NPVT_Source.zip
 echo =========================================
 
 pause
-endlocal
-exit /b 0
+endlocal & exit /b %EXIT_CODE%
