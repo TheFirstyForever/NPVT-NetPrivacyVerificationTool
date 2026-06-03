@@ -141,7 +141,8 @@ if exist "%ROOT%README.md" copy /y "%ROOT%README.md" "%PORTABLE_DIR%\README.md" 
 echo [OK] Portable build ready: release\NPVT_Portable\
 
 echo [2b/4] Packing Portable ZIP...
-python tools\make_zip.py "%PORTABLE_DIR%" "%RELEASE_DIR%\NPVT_Portable.zip"
+python tools\make_zip.py "%PORTABLE_DIR%" "%RELEASE_DIR%\NPVT_Portable.zip" --compresslevel 3 --progress-every 200
+echo [INFO] ZIP process returned with code %ERRORLEVEL%
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Portable ZIP build failed.
     set "EXIT_CODE=1"
@@ -244,6 +245,7 @@ del /q "%SRC_STAGE%\app\data\links_cache.json" >nul 2>&1
 del /q "%SRC_STAGE%\app\data\verified_nodes.txt" >nul 2>&1
 
 python tools\make_zip.py "%SRC_STAGE%" "%RELEASE_DIR%\NPVT_Source.zip"
+echo [INFO] ZIP process returned with code %ERRORLEVEL%
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Clean source ZIP build failed.
     set "EXIT_CODE=1"
