@@ -2,6 +2,8 @@
 chcp 65001 >nul
 title NetPrivacy Verification Tool - Uninstaller [by @TheFirSStYfOreVer]
 
+setlocal
+
 echo =========================================
 echo  NetPrivacy Verification Tool
 echo  Uninstaller
@@ -16,7 +18,12 @@ pause >nul
 echo.
 echo Removing dependencies...
 
-pip uninstall -y aiohttp aiohttp-socks pyperclip customtkinter Pillow 2>nul
+where python >nul 2>nul
+if "%errorlevel%"=="0" (
+    python -m pip uninstall -y aiohttp aiohttp-socks pyperclip flet 2>nul
+) else (
+    pip uninstall -y aiohttp aiohttp-socks pyperclip flet 2>nul
+)
 
 echo.
 echo Removing desktop shortcut...
@@ -33,3 +40,6 @@ echo To remove them, manually delete this folder:
 echo %~dp0
 echo.
 pause
+
+endlocal
+exit /b 0

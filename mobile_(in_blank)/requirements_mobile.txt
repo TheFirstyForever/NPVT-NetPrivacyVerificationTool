@@ -1,0 +1,14 @@
+# NetPrivacy Mobile — минимальные зависимости
+# =============================================
+# Только необходимое для core-логики.
+# Никаких GUI-библиотек (customtkinter, Pillow, pyperclip).
+#
+# Установка:
+#   pip install -r requirements_mobile.txt
+#
+# Android / Termux:
+#   pkg install python xray
+#   pip install -r requirements_mobile.txt
+
+aiohttp>=3.9.0
+aiohttp-socks>=0.8.0

@@ -7,27 +7,27 @@
 
 """
 NetPrivacy Verification Tool - Modern GUI Edition
-Powered by CustomTkinter
+Powered by Flet
 Made by @TheFirSStYfOreVer
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import re
 import sys
 import time
-import threading
 import webbrowser
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List, Optional
 from urllib.parse import quote
 
-import customtkinter as ctk
-from PIL import Image
+import flet as ft
 
 import aiohttp
-import aiohttp_socks
 
 # Core imports
 from core.scanner import LogicVerifier
@@ -41,12 +41,12 @@ try:
 except ImportError:
     HAS_PYPERCLIP = False
 
-# Настройка темы CustomTkinter
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("dark-blue")
-
 # Константы
 CONCURRENT_LIMIT = 50
+HARD_MAX_WORKERS_AT_100 = 200
+SUBSCRIPTION_HOST = "127.0.0.1"
+SUBSCRIPTION_PORT = 54321
+SUBSCRIPTION_URL = f"http://{SUBSCRIPTION_HOST}:{SUBSCRIPTION_PORT}/sub"
 PROXY_REGEX = re.compile(r'(vless|vmess|trojan|ss)://[^\s<>"\']+', re.IGNORECASE)
 
 def _get_runtime_base() -> str:
@@ -115,1349 +115,200 @@ def _load_links_cache() -> List[str]:
         return []
 
 
-class AsyncTkinterBridge:
-    """Мост для интеграции asyncio с tkinter mainloop."""
-    def __init__(self, root):
-        self.root = root
-        self.loop = asyncio.new_event_loop()
-        self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        self.thread.start()
-        self.pending_callbacks = []
-        self.current_task = None
-        self._stop_event = asyncio.Event()
-        self._check_callbacks()
-    
-    def _run_loop(self):
-        """Запускает event loop в отдельном потоке."""
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
-    
-    def _check_callbacks(self):
-        """Проверяет и выполняет отложенные callback'и в main thread."""
-        while self.pending_callbacks:
-            callback = self.pending_callbacks.pop(0)
-            try:
-                callback()
-            except Exception as e:
-                print(f"Callback error: {e}")
-        self.root.after(50, self._check_callbacks)
-    
-    def run_async(self, coro, callback=None):
-        """Запускает корутину в отдельном потоке с опциональным callback."""
-        async def wrapper():
-            try:
-                result = await coro
-                if callback:
-                    self.pending_callbacks.append(lambda: callback(result))
-                return result
-            except asyncio.CancelledError:
-                print("Async task was cancelled")
-                if callback:
-                    self.pending_callbacks.append(lambda: callback(None))
-            except Exception as e:
-                print(f"Async error: {e}")
-                if callback:
-                    self.pending_callbacks.append(lambda: callback(None))
-        
-        # Сбрасываем stop event
-        self._stop_event.clear()
-        # Создаем Task внутри event loop потокобезопасно
-        def create_task():
-            self.current_task = self.loop.create_task(wrapper())
-        self.loop.call_soon_threadsafe(create_task)
-        return True
-    
-    def cancel_current(self):
-        """Отменяет все запущенные задачи."""
-        cancelled_count = 0
-        
-        def do_cancel():
-            nonlocal cancelled_count
-            # Отменяем все задачи в loop кроме самой loop задачи
-            for task in asyncio.all_tasks(self.loop):
-                if not task.done() and not task.cancelled():
-                    task.cancel()
-                    cancelled_count += 1
-        
-        # Отменяем задачи внутри event loop
-        self.loop.call_soon_threadsafe(do_cancel)
-        # Устанавливаем stop event
-        self.loop.call_soon_threadsafe(self._stop_event.set)
-        
-        return cancelled_count > 0
-    
-    def stop(self):
-        """Останавливает event loop."""
-        self.loop.call_soon_threadsafe(self.loop.stop)
-    
-    def is_stopped(self):
-        """Проверяет, был ли запрошен останов."""
-        return self._stop_event.is_set()
+@dataclass
+class _UiStatsSnapshot:
+    cps: float = 0.0
+    active_workers: int = 0
+    avg_latency_ms: float = 0.0
+    current_task: str = ""
+    completed: int = 0
+    total: int = 0
 
 
-class LogPanel(ctk.CTkFrame):
-    """Панель логов с авто-прокруткой."""
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, **kwargs)
-        
-        # Заголовок
-        self.header = ctk.CTkLabel(
-            self, 
-            text="📋 SYSTEM LOGS", 
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=("#3B8ED0", "#3B8ED0")
-        )
-        self.header.pack(pady=(10, 5), padx=10, anchor="w")
-        
-        # Область логов
-        self.log_text = ctk.CTkTextbox(
-            self,
-            wrap="word",
-            font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color=("#1A1A2E", "#1A1A2E"),
-            border_color=("#3B8ED0", "#3B8ED0"),
-            border_width=1
-        )
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=5)
-        self.log_text.configure(state="disabled")
-        
-        self.max_lines = 200
-    
-    def add_log(self, message: str, tag: str = "info"):
-        """Добавляет сообщение в лог."""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        
-        colors = {
-            "info": "#00BFFF",
-            "success": "#00FF7F", 
-            "warning": "#FFD700",
-            "error": "#FF6B6B",
-            "debug": "#888888"
-        }
-        
-        color = colors.get(tag, "#FFFFFF")
-        
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", f"[{timestamp}] {message}\n")
-        
-        lines = self.log_text.get("1.0", "end").split("\n")
-        if len(lines) > self.max_lines:
-            self.log_text.delete("1.0", f"{len(lines) - self.max_lines}.0")
-        
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-    
-    def clear(self):
-        """Очищает лог."""
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
+class _TuiAdapter:
+    """Минимальный адаптер, чтобы LogicVerifier мог сообщать текущий конфиг и читать stop-флаги."""
 
-
-class ResultsPanel(ctk.CTkFrame):
-    """Панель результатов проверки."""
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, **kwargs)
-        
-        # Заголовок
-        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.pack(fill="x", padx=10, pady=(10, 5))
-        
-        self.header = ctk.CTkLabel(
-            self.header_frame,
-            text="🔍 VERIFICATION RESULTS",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color=("#3B8ED0", "#3B8ED0")
-        )
-        self.header.pack(side="left")
-        
-        self.count_label = ctk.CTkLabel(
-            self.header_frame,
-            text="Nodes: 0 | Active: 0 | High Reliability: 0",
-            font=ctk.CTkFont(size=11)
-        )
-        self.count_label.pack(side="right")
-        
-        # Таблица результатов
-        self.table_frame = ctk.CTkFrame(self, fg_color=("#1A1A2E", "#1A1A2E"))
-        self.table_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        # Заголовки таблицы (убрали детализированную колонку YT|TG|DC|IG)
-        headers = ["#", "Status", "Node", "Protocol", "Base RTT", "Resources", "Avg RTT"]
-        header_frame = ctk.CTkFrame(self.table_frame, fg_color=("#2D2D44", "#2D2D44"), height=30)
-        header_frame.pack(fill="x", padx=1, pady=1)
-        header_frame.pack_propagate(False)
-        
-        col_widths = [4, 12, 20, 8, 10, 10, 10]
-        for i, (header, width) in enumerate(zip(headers, col_widths)):
-            lbl = ctk.CTkLabel(
-                header_frame,
-                text=header,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                width=width * 8,
-                text_color=("#3B8ED0", "#3B8ED0")
-            )
-            lbl.pack(side="left", padx=2)
-        
-        # Область для строк таблицы с прокруткой
-        self.rows_canvas = ctk.CTkCanvas(self.table_frame, bg="#1A1A2E", highlightthickness=0, width=750)
-        self.rows_canvas.pack(fill="both", expand=True, padx=1, pady=1)
-        
-        # Горизонтальная прокрутка
-        self.h_scrollbar = ctk.CTkScrollbar(self.table_frame, orientation="horizontal", command=self.rows_canvas.xview)
-        self.h_scrollbar.pack(fill="x", padx=1)
-        
-        self.rows_canvas.configure(xscrollcommand=self.h_scrollbar.set)
-        
-        self.rows_frame = ctk.CTkFrame(self.rows_canvas, fg_color="transparent", width=750)
-        self.rows_canvas.create_window((0, 0), window=self.rows_frame, anchor="nw", width=750)
-        
-        self.results_data = []
-        self.row_widgets = []
-    
-    def update_counts(self, total: int, active: int, high_rel: int):
-        """Обновляет счетчики."""
-        self.count_label.configure(
-            text=f"Nodes: {total} | Active: {active} | High Reliability: {high_rel}"
-        )
-    
-    def add_result(self, result: dict):
-        """Добавляет результат в таблицу."""
-        self.results_data.append(result)
-        self._refresh_table()
-    
-    def _refresh_table(self):
-        """Обновляет отображение таблицы."""
-        for widget in self.row_widgets:
-            widget.destroy()
-        self.row_widgets = []
-        
-        sorted_results = sorted(
-            self.results_data,
-            key=lambda x: (-x.get("accessible_count", 0), x.get("avg_resource_rtt", 99999))
-        )
-        
-        for idx, result in enumerate(sorted_results[:15], 1):
-            row_frame = self._create_row(result, idx)
-            row_frame.pack(fill="x", padx=2, pady=1)
-            self.row_widgets.append(row_frame)
-        
-        self.rows_frame.update_idletasks()
-        self.rows_canvas.configure(scrollregion=self.rows_canvas.bbox("all"))
-        self.rows_canvas.configure(width=750)
-        
-        active_count = sum(1 for r in self.results_data if r.get("accessible_count", 0) >= 1)
-        high_count = sum(1 for r in self.results_data if r.get("is_high_reliability", False))
-        self.update_counts(len(self.results_data), active_count, high_count)
-    
-    def _create_row(self, result: dict, idx: int) -> ctk.CTkFrame:
-        """Создает строку таблицы."""
-        accessible = result.get("accessible_count", 0)
-        
-        if accessible == 4:
-            bg_color = ("#2D5016", "#2D5016")
-            status_text = "★ HIGH"
-            status_color = "#FFD700"
-        elif accessible == 3:
-            bg_color = ("#1E3A2F", "#1E3A2F")
-            status_text = "✓ GOOD"
-            status_color = "#00FF7F"
-        elif accessible == 2:
-            bg_color = ("#1A2F1A", "#1A2F1A")
-            status_text = "✓ OK"
-            status_color = "#90EE90"
-        elif accessible == 1:
-            bg_color = ("#3A3010", "#3A3010")
-            status_text = "~ WEAK"
-            status_color = "#FFD700"
-        else:
-            bg_color = ("#3A1A1A", "#3A1A1A")
-            status_text = "✗ DEAD"
-            status_color = "#FF6B6B"
-
-        if result.get("gemini_ready"):
-            status_text = f"{status_text} G"
-        
-        row = ctk.CTkFrame(self.rows_frame, fg_color=bg_color, height=28, width=750)
-        row.pack_propagate(False)
-        
-        node_name = result.get("name", "Unknown")[:18]
-        protocol = result.get("type", "?").upper()[:4]
-        ping = f"{result.get('ping', 0):.0f}"
-        accessibility = result.get("accessibility", "0/4")
-        avg_rtt = f"{result.get('avg_resource_rtt', 0):.0f}" if result.get("avg_resource_rtt", 0) > 0 else "-"
-        
-        cols_data = [
-            (str(idx), 4),
-            (status_text, 12),
-            (node_name, 20),
-            (protocol, 8),
-            (ping, 10),
-            (accessibility, 10),
-            (avg_rtt, 10)
-        ]
-        
-        for text, width in cols_data:
-            text_color = status_color if width == 12 else ("#E0E0E0", "#E0E0E0")
-            lbl = ctk.CTkLabel(
-                row, 
-                text=text, 
-                width=width * 8,
-                font=ctk.CTkFont(size=10),
-                text_color=text_color
-            )
-            lbl.pack(side="left", padx=2)
-        
-        return row
-    
-    def clear(self):
-        """Очищает таблицу."""
-        self.results_data = []
-        for widget in self.row_widgets:
-            widget.destroy()
-        self.row_widgets = []
-        self.update_counts(0, 0, 0)
-
-
-class CurrentNodePanel(ctk.CTkFrame):
-    """Панель текущего проверяемого узла."""
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, **kwargs)
-        
-        self.header = ctk.CTkLabel(
-            self,
-            text="⚡ CURRENT NODE",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=("#3B8ED0", "#3B8ED0")
-        )
-        self.header.pack(pady=(10, 5), padx=10, anchor="w")
-        
-        # Информационные поля
-        self.info_frame = ctk.CTkFrame(self, fg_color=("#1A1A2E", "#1A1A2E"))
-        # Не расширяем, чтобы кнопки всегда оставались видимыми
-        self.info_frame.pack(fill="both", expand=False, padx=10, pady=5)
-        
-        self.fields = {}
-        field_names = ["Name:", "Host:", "Port:", "Protocol:", "Network:", "Security:"]
-        
-        for name in field_names:
-            frame = ctk.CTkFrame(self.info_frame, fg_color="transparent")
-            frame.pack(fill="x", padx=10, pady=2)
-            
-            lbl = ctk.CTkLabel(
-                frame,
-                text=name,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                width=80,
-                anchor="w"
-            )
-            lbl.pack(side="left")
-            
-            val = ctk.CTkLabel(
-                frame,
-                text="-",
-                font=ctk.CTkFont(size=11),
-                anchor="w"
-            )
-            val.pack(side="left", fill="x", expand=True)
-            
-            self.fields[name] = val
-        
-        # Индикатор прогресса
-        self.progress_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.progress_frame.pack(fill="x", padx=10, pady=5)
-        
-        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, height=8)
-        self.progress_bar.pack(fill="x", padx=5, pady=5)
-        self.progress_bar.set(0)
-        
-        self.progress_label = ctk.CTkLabel(
-            self.progress_frame,
-            text="Ready to scan",
-            font=ctk.CTkFont(size=10)
-        )
-        self.progress_label.pack()
-    
-    def update_node(self, config: dict, name: str = ""):
-        """Обновляет информацию о текущем узле."""
-        if not config:
-            for val in self.fields.values():
-                val.configure(text="-")
-            return
-        
-        outbound = config.get("outbounds", [{}])[0]
-        protocol = outbound.get("protocol", "unknown")
-        
-        settings = outbound.get("settings", {})
-        stream = outbound.get("streamSettings", {})
-        
-        host = "N/A"
-        port = "N/A"
-        
-        if protocol in ["vless", "vmess", "trojan"]:
-            vnext = settings.get("vnext", [{}])[0] if protocol in ["vless", "vmess"] else {}
-            if protocol == "trojan":
-                servers = settings.get("servers", [{}])
-                if servers:
-                    host = servers[0].get("address", "N/A")
-                    port = str(servers[0].get("port", "N/A"))
-            else:
-                host = vnext.get("address", "N/A")
-                port = str(vnext.get("port", "N/A"))
-        elif protocol == "ss":
-            servers = settings.get("servers", [{}])
-            if servers:
-                host = servers[0].get("address", "N/A")
-                port = str(servers[0].get("port", "N/A"))
-        
-        network = stream.get("network", "tcp")
-        security = stream.get("security", "none")
-        
-        self.fields["Name:"].configure(text=name[:30] if name else "Unknown")
-        self.fields["Host:"].configure(text=host)
-        self.fields["Port:"].configure(text=port)
-        self.fields["Protocol:"].configure(text=protocol.upper())
-        self.fields["Network:"].configure(text=network)
-        self.fields["Security:"].configure(text=security)
-    
-    def update_progress(self, current: int, total: int):
-        """Обновляет прогресс-бар."""
-        if total > 0:
-            progress = current / total
-            self.progress_bar.set(progress)
-            self.progress_label.configure(text=f"Progress: {current}/{total} ({int(progress*100)}%)")
-        else:
-            self.progress_bar.set(0)
-            self.progress_label.configure(text="Ready to scan")
-    
-    def reset(self):
-        """Сбрасывает панель."""
-        for val in self.fields.values():
-            val.configure(text="-")
-        self.progress_bar.set(0)
-        self.progress_label.configure(text="Ready to scan")
-
-
-class BestConfigPanel(ctk.CTkFrame):
-    """Панель лучшей конфигурации."""
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, **kwargs)
-        
-        self.best_config = None
-        
-        self.header = ctk.CTkLabel(
-            self,
-            text="🏆 OPTIMAL CONFIG",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=("#FFD700", "#FFD700")
-        )
-        self.header.pack(pady=(10, 2), padx=10, anchor="w")
-
-        # Панель управления отображением деталей (кнопка-"треугольник")
-        self.toggle_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.toggle_frame.pack(fill="x", padx=10, pady=(0, 3))
-        self.details_visible = False
-        self.toggle_btn = ctk.CTkButton(
-            self.toggle_frame,
-            width=28,
-            height=24,
-            text="▶",
-            command=self._toggle_details,
-            fg_color=("#2A2A3A", "#2A2A3A"),
-            hover_color=("#3A3A4A", "#3A3A4A")
-        )
-        self.toggle_btn.pack(side="right")
-
-        # Информация о лучшей конфигурации (краткая)
-        self.info_frame = ctk.CTkFrame(self, fg_color=("#1A1A2E", "#1A1A2E"))
-        self.info_frame.pack(fill="x", expand=False, padx=10, pady=5)
-
-        # Прокручиваемая подробная область (по умолчанию скрыта)
-        self.details_frame = ctk.CTkScrollableFrame(
-            self,
-            fg_color=("#1A1A2E", "#1A1A2E"),
-            height=220,
-            width=280
-        )
-        # Не pack-аем здесь — отображается по кнопке
-        
-        self.status_label = ctk.CTkLabel(
-            self.info_frame,
-            text="Waiting for high reliability node...",
-            font=ctk.CTkFont(size=11),
-            text_color=("#888888", "#888888")
-        )
-        self.status_label.pack(pady=20)
-        
-        # Кнопки (всегда внизу)
-        self.button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.button_frame.pack(side="bottom", fill="x", padx=10, pady=5)
-        
-        self.copy_btn = ctk.CTkButton(
-            self.button_frame,
-            text="📋 Copy to Clipboard",
-            command=self._copy_to_clipboard,
-            fg_color=("#2D5016", "#2D5016"),
-            hover_color=("#3D7020", "#3D7020"),
-            state="disabled"
-        )
-        self.copy_btn.pack(fill="x", pady=2)
-
-        self.open_btn = ctk.CTkButton(
-            self.button_frame,
-            text="🌐 Open in App (happ://)",
-            command=self._open_in_app,
-            fg_color=("#1E3A5F", "#1E3A5F"),
-            hover_color=("#2E4A6F", "#2E4A6F"),
-            state="disabled"
-        )
-        self.open_btn.pack(fill="x", pady=2)
-
-    
-    def update_config(self, result: dict):
-        """Обновляет лучшую конфигурацию."""
-        if not result or not result.get("is_high_reliability"):
-            return
-        
-        if self.best_config:
-            current_avg = self.best_config.get("avg_resource_rtt", 99999)
-            new_avg = result.get("avg_resource_rtt", 99999)
-            if new_avg >= current_avg:
-                return
-        
-        self.best_config = result
-        self._update_display()
-    
-    def _update_display(self):
-        """Обновляет отображение."""
-        if not self.best_config:
-            return
-        
-        # Перерисовываем краткую информацию
-        for widget in self.info_frame.winfo_children():
-            widget.destroy()
-
-        name = self.best_config.get("name", "Unknown")[:25]
-        avg_rtt = self.best_config.get("avg_resource_rtt", 0)
-        accessibility = self.best_config.get("accessibility", "0/4")
-
-        ctk.CTkLabel(
-            self.info_frame,
-            text=f"{name}",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=("#FFD700", "#FFD700")
-        ).pack(pady=(6, 2), anchor="w", padx=8)
-
-        ctk.CTkLabel(
-            self.info_frame,
-            text=f"Protocol: {self.best_config.get('type', '?').upper()}  |  Avg: {avg_rtt:.1f}ms  |  Access: {accessibility}",
-            font=ctk.CTkFont(size=11)
-        ).pack(anchor="w", padx=8)
-
-        # Перерисовываем подробности в прокручиваемой области
-        for w in self.details_frame.winfo_children():
-            w.destroy()
-
-        details = self.best_config.get("resource_results", {})
-        domains_map = {"youtube.com": "YT", "t.me": "TG", "discord.com": "DC", "instagram.com": "IG"}
-        parts = []
-        for domain, short in domains_map.items():
-            if domain in details:
-                success, rtt = details[domain]
-                if success:
-                    parts.append(f"{short}:{int(rtt):d}")
-                else:
-                    parts.append(f"{short}:T")
-            else:
-                parts.append(f"{short}:-")
-        one_line = " | ".join(parts)
-        ctk.CTkLabel(
-            self.details_frame,
-            text=one_line,
-            font=ctk.CTkFont(size=11, family="Consolas"),
-            text_color=("#CCCCCC", "#CCCCCC"),
-            anchor="w",
-            justify="left"
-        ).pack(fill="x", padx=6, pady=(4, 6))
-
-        # Полная ссылка (обрезаем для вида)
-        link = self.best_config.get("link", "")
-        if link:
-            ctk.CTkLabel(self.details_frame, text=f"Link: {link}", font=ctk.CTkFont(size=10), text_color=("#AAAAAA", "#AAAAAA"), anchor="w", justify="left", wraplength=260).pack(fill="x", padx=6, pady=(4,6))
-        
-        self.copy_btn.configure(state="normal")
-        self.open_btn.configure(state="normal")
-        # Если детали уже развернуты — убедимся, что прокрутка активна
-        if self.details_visible:
-            self._enable_details_wheel(True)
-
-    def _toggle_details(self):
-        """Показать/скрыть подробную информацию со скроллом."""
-        try:
-            if self.details_visible:
-                self.details_frame.pack_forget()
-                self.details_visible = False
-                self.toggle_btn.configure(text="▶")
-                self._enable_details_wheel(False)
-            else:
-                self.details_frame.pack(fill="both", expand=False, padx=10, pady=(0, 5))
-                self.details_visible = True
-                self.toggle_btn.configure(text="▼")
-                self._enable_details_wheel(True)
-        except Exception:
-            pass
-
-    def _on_mousewheel(self, event):
-        """Прокрутка колесиком (Windows/macOS)."""
-        try:
-            canvas = getattr(self.details_frame, "_parent_canvas", None)
-            if self.details_visible and canvas is not None:
-                delta = int(-1 * (event.delta / 120))
-                canvas.yview_scroll(delta, "units")
-        except Exception:
-            pass
-
-    def _on_mousewheel_linux(self, event):
-        """Прокрутка колесиком (Linux Button-4/5)."""
-        try:
-            canvas = getattr(self.details_frame, "_parent_canvas", None)
-            if self.details_visible and canvas is not None:
-                delta = -1 if getattr(event, "num", 5) == 4 else 1
-                canvas.yview_scroll(delta, "units")
-        except Exception:
-            pass
-
-    def _enable_details_wheel(self, enable: bool):
-        """Включает/выключает обработку колесика мыши для блока details."""
-        try:
-            if enable:
-                self.details_frame.bind_all("<MouseWheel>", self._on_mousewheel)
-                self.details_frame.bind_all("<Button-4>", self._on_mousewheel_linux)
-                self.details_frame.bind_all("<Button-5>", self._on_mousewheel_linux)
-            else:
-                self.details_frame.unbind_all("<MouseWheel>")
-                self.details_frame.unbind_all("<Button-4>")
-                self.details_frame.unbind_all("<Button-5>")
-        except Exception:
-            pass
-    def _copy_to_clipboard(self):
-        """Копирует ссылку в буфер обмена (зелёная кнопка)."""
-        if not self.best_config:
-            return
-        link = self.best_config.get("link", "")
-        if not link:
-            return
-        try:
-            copied = False
-            if HAS_PYPERCLIP:
-                try:
-                    pyperclip.copy(link)
-                    copied = True
-                except Exception:
-                    copied = False
-            if not copied and sys.platform == "win32":
-                import ctypes
-                CF_UNICODETEXT = 13
-                if ctypes.windll.user32.OpenClipboard(0):
-                    try:
-                        ctypes.windll.user32.EmptyClipboard()
-                        size = (len(link) + 1) * 2
-                        handle = ctypes.windll.kernel32.GlobalAlloc(0x0002 | 0x0040, size)
-                        if handle:
-                            ptr = ctypes.windll.kernel32.GlobalLock(handle)
-                            if ptr:
-                                ctypes.memmove(ptr, link.encode('utf-16-le'), len(link) * 2)
-                                ctypes.windll.kernel32.GlobalUnlock(handle)
-                            ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle)
-                            copied = True
-                    finally:
-                        ctypes.windll.user32.CloseClipboard()
-            self.copy_btn.configure(text=("✅ Copied!" if copied else "❌ Failed"), fg_color=("#00FF7F" if copied else "#7B2D2D", "#00FF7F" if copied else "#7B2D2D"))
-            self.after(2000, lambda: self.copy_btn.configure(
-                text="📋 Copy to Clipboard",
-                fg_color=("#2D5016", "#2D5016")
-            ))
-        except Exception:
-            self.copy_btn.configure(text="❌ Failed", fg_color=("#7B2D2D", "#7B2D2D"))
-            self.after(2000, lambda: self.copy_btn.configure(
-                text="📋 Copy to Clipboard",
-                fg_color=("#2D5016", "#2D5016")
-            ))
-    
-    def _open_in_app(self):
-        """Открывает диплинк с URL локальной подписки, а не сырым конфигом."""
-        try:
-            sub_url = "http://127.0.0.1:54321/sub"
-            encoded = quote(sub_url, safe="")
-
-            def _open(url: str):
-                if sys.platform == "win32":
-                    os.startfile(url)  # type: ignore[attr-defined]
-                else:
-                    webbrowser.open(url, new=1)
-
-            opened_ok = False
-
-            # 1. Try happ:// deeplinks (correct format: happ://add/<url>)
-            candidates = [
-                f"happ://add/{sub_url}",
-                f"hiddify://install-sub?url={encoded}#NetPrivacy",
-                f"hiddify://install-config?url={encoded}#NetPrivacy",
-            ]
-
-            for u in candidates:
-                try:
-                    _open(u)
-                    opened_ok = True
-                    break
-                except Exception:
-                    continue
-
-            # 2. Fallback: copy subscription URL to clipboard and open in browser
-            if not opened_ok:
-                try:
-                    if HAS_PYPERCLIP:
-                        pyperclip.copy(sub_url)
-                    elif sys.platform == "win32":
-                        import ctypes
-                        CF_UNICODETEXT = 13
-                        if ctypes.windll.user32.OpenClipboard(0):
-                            try:
-                                ctypes.windll.user32.EmptyClipboard()
-                                size = (len(sub_url) + 1) * 2
-                                handle = ctypes.windll.kernel32.GlobalAlloc(0x0002 | 0x0040, size)
-                                if handle:
-                                    ptr = ctypes.windll.kernel32.GlobalLock(handle)
-                                    if ptr:
-                                        ctypes.memmove(ptr, sub_url.encode('utf-16-le'), len(sub_url) * 2)
-                                        ctypes.windll.kernel32.GlobalUnlock(handle)
-                                    ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle)
-                            finally:
-                                ctypes.windll.user32.CloseClipboard()
-                    _open(sub_url)
-                    opened_ok = True
-                except Exception:
-                    pass
-
-            if not opened_ok:
-                raise Exception("No handler found")
-            self.open_btn.configure(text="✅ Opened", fg_color=("#00FF7F", "#00FF7F"))
-            self.after(2000, lambda: self.open_btn.configure(
-                text="🌐 Open in App (happ://)",
-                fg_color=("#1E3A5F", "#1E3A5F")
-            ))
-        except Exception as e:
-            print(f"Open error: {e}")
-            self.open_btn.configure(text="❌ Failed", fg_color=("#7B2D2D", "#7B2D2D"))
-            self.after(2000, lambda: self.open_btn.configure(
-                text="🌐 Open in App (happ://)",
-                fg_color=("#1E3A5F", "#1E3A5F")
-            ))
-    
-    def reset(self):
-        """Сбрасывает панель."""
-        self.best_config = None
-        for widget in self.info_frame.winfo_children():
-            widget.destroy()
-        
-        self.status_label = ctk.CTkLabel(
-            self.info_frame,
-            text="Waiting for high reliability node...",
-            font=ctk.CTkFont(size=11),
-            text_color=("#888888", "#888888")
-        )
-        self.status_label.pack(pady=20)
-        
-        self.copy_btn.configure(state="disabled")
-        self.open_btn.configure(state="disabled")
-        # Скрываем подробности при сбросе
-        try:
-            self.details_frame.pack_forget()
-        except Exception:
-            pass
-        self.details_visible = False
-        self.toggle_btn.configure(text="▶")
-        self._enable_details_wheel(False)
-
-
-class ControlPanel(ctk.CTkFrame):
-    """Панель управления."""
-    def __init__(self, parent, on_start=None, on_stop=None, **kwargs):
-        super().__init__(parent, **kwargs)
-        
-        self.on_start = on_start
-        self.on_stop = on_stop
-        
-        self.header = ctk.CTkLabel(
-            self,
-            text="🎮 CONTROL CENTER",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=("#3B8ED0", "#3B8ED0")
-        )
-        self.header.pack(pady=(10, 15), padx=10, anchor="w")
-        
-        # Кнопки управления
-        self.start_btn = ctk.CTkButton(
-            self,
-            text="▶ START VERIFICATION",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=45,
-            fg_color=("#1E592E", "#1E592E"),
-            hover_color=("#2E7940", "#2E7940"),
-            command=self._on_start_click
-        )
-        self.start_btn.pack(fill="x", padx=10, pady=5)
-        
-        self.stop_btn = ctk.CTkButton(
-            self,
-            text="⏹ STOP",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=40,
-            fg_color=("#7B2D2D", "#7B2D2D"),
-            hover_color=("#9B3D3D", "#9B3D3D"),
-            command=self._on_stop_click,
-            state="disabled"
-        )
-        self.stop_btn.pack(fill="x", padx=10, pady=5)
-        
-        # Разделитель
-        ctk.CTkFrame(self, height=2, fg_color=("#3B8ED0", "#3B8ED0")).pack(
-            fill="x", padx=10, pady=15
-        )
-        
-        # Настройки
-        ctk.CTkLabel(
-            self,
-            text="⚙ SETTINGS",
-            font=ctk.CTkFont(size=12, weight="bold")
-        ).pack(padx=10, anchor="w")
-        
-        # Параллелизм
-        self.concurrency_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.concurrency_frame.pack(fill="x", padx=10, pady=5)
-        
-        ctk.CTkLabel(
-            self.concurrency_frame,
-            text="Concurrency:",
-            font=ctk.CTkFont(size=11)
-        ).pack(side="left")
-        
-        self.concurrency_var = ctk.StringVar(value="50")
-        self.concurrency_combo = ctk.CTkComboBox(
-            self.concurrency_frame,
-            values=["10", "25", "50", "75", "100"],
-            variable=self.concurrency_var,
-            width=70
-        )
-        self.concurrency_combo.pack(side="right")
-
-        # Разделитель
-        ctk.CTkFrame(self, height=1, fg_color=("#2A2A3A", "#2A2A3A")).pack(
-            fill="x", padx=10, pady=10
-        )
-
-        # Источник конфигов
-        ctk.CTkLabel(
-            self,
-            text="📡 SOURCE MODE",
-            font=ctk.CTkFont(size=12, weight="bold")
-        ).pack(padx=10, anchor="w", pady=(0, 5))
-
-        self.source_mode_var = ctk.StringVar(value="Auto")
-        self.source_seg = ctk.CTkSegmentedButton(
-            self,
-            values=["Auto", "Online", "Cache", "Parse"],
-            variable=self.source_mode_var,
-            font=ctk.CTkFont(size=11),
-            height=32,
-            command=self._on_source_change
-        )
-        self.source_seg.pack(fill="x", padx=10, pady=(0, 4))
-
-        self.cache_info_label = ctk.CTkLabel(
-            self,
-            text=self._get_cache_info(),
-            font=ctk.CTkFont(size=10),
-            text_color=("#888888", "#666666"),
-            wraplength=260,
-            justify="left"
-        )
-        self.cache_info_label.pack(padx=10, anchor="w", pady=(0, 6))
-
-    def get_source_mode(self) -> str:
-        """Returns 'auto', 'online', 'cache' or 'parse'."""
-        return self.source_mode_var.get().lower()
-
-    def _on_source_change(self, value: str) -> None:
-        self.cache_info_label.configure(text=self._get_cache_info())
-
-    def _get_cache_info(self) -> str:
-        try:
-            with open(LINKS_CACHE_PATH, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            count = data.get("count", 0)
-            ts = data.get("cached_at", "")[:10]
-            return f"💾 Кэш: {count} ссылок  ({ts})"
-        except Exception:
-            return "💾 Кэш: пусто"
-
-    def update_cache_info(self) -> None:
-        """Обновляет метку после сохранения кэша."""
-        self.cache_info_label.configure(text=self._get_cache_info())
-
-    def _on_start_click(self):
-        """Обработчик нажатия Start."""
-        self.start_btn.configure(state="disabled")
-        self.stop_btn.configure(state="normal")
-        if self.on_start:
-            self.on_start(int(self.concurrency_var.get()))
-    
-    def _on_stop_click(self):
-        """Обработчик нажатия Stop."""
-        self.stop_btn.configure(state="disabled")
-        if self.on_stop:
-            self.on_stop()
-    
-    def reset_buttons(self):
-        """Сбрасывает состояние кнопок."""
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
-
-
-class NetPrivacyApp(ctk.CTk):
-    """Главное окно приложения."""
-    def __init__(self):
-        super().__init__()
-        
-        self.title("NetPrivacy Verification Tool | made by @TheFirSStYfOreVer")
-        self.geometry("1400x900")
-        self.minsize(1200, 700)
-        
-        # Цветовая схема
-        self.configure(fg_color=("#0F0F1A", "#0F0F1A"))
-        
-        # Инициализация async bridge
-        self.async_bridge = AsyncTkinterBridge(self)
-        
-        # Состояние
-        self.scanner = None
-        self.is_running = False
-        self.current_results = []
-        self.semaphore_limit = CONCURRENT_LIMIT
+    def __init__(self, on_current_task) -> None:
         self._stop_requested = False
-        self._active_tasks = []  # Храним задачи для отмены при STOP
-        
-        self._build_ui()
+        self.is_running = False
+        self._on_current_task = on_current_task
 
-        # Локальный сервер подписок: 127.0.0.1:54321/sub
+    async def log(self, message: str) -> None:
+        return
+
+    def set_current_config(self, config: dict, name: str = "") -> None:
+        try:
+            self._on_current_task(name or "")
+        except Exception:
+            pass
+
+
+class VerificationController:
+    def __init__(
+        self,
+        *,
+        on_log,
+        on_results_batch,
+        on_stats,
+    ) -> None:
+        self._on_log = on_log
+        self._on_results_batch = on_results_batch
+        self._on_stats = on_stats
+
+        self.scanner: Optional[LogicVerifier] = None
+        self._tui = _TuiAdapter(self._set_current_task)
+        self._stop_requested = False
+        self._main_task: Optional[asyncio.Task] = None
+        self._active_tasks: List[asyncio.Task] = []
+
+        self._runtime_tune_event = asyncio.Event()
+
+        self._stats_lock = asyncio.Lock()
+        self._stats_done_times = deque()
+        self._stats_latencies_ms = deque(maxlen=200)
+        self._stats_cps_ema = 0.0
+        self._stats_current_task = ""
+
+        self._completed = 0
+        self._total = 0
+
+        self.current_results: List[dict] = []
         self.sub_server = LocalSubscriptionServer(
-            data_provider=lambda: list(self.current_results)
+            data_provider=lambda: list(self.current_results),
+            host=SUBSCRIPTION_HOST,
+            port=SUBSCRIPTION_PORT,
         )
-        # Запускаем сервер в фоне, не блокируя UI
-        self.async_bridge.run_async(self.sub_server.start())
-        # Можно добавить легкий лог после старта (необязательно)
-        async def _notify_started():
-            ok = await self.sub_server.wait_until_started(1.5)
-            if ok:
-                await self.log("[SUB] Local subscription server: http://127.0.0.1:54321/sub")
-        self.async_bridge.run_async(_notify_started())
-        
-        # Проверка pyperclip
-        import sys
-        python_exe = sys.executable
-        if not HAS_PYPERCLIP:
-            self.after(1000, lambda: self.log_panel.add_log(
-                f"pyperclip not found in {python_exe}. Clipboard will use Windows API fallback.",
-                "warning"
-            ))
-        else:
-            self.after(1000, lambda: self.log_panel.add_log(
-                f"pyperclip loaded OK from {python_exe}",
-                "success"
-            ))
-    
-    def _build_ui(self):
-        """Строит пользовательский интерфейс."""
-        # Главный контейнер
-        self.main_frame = ctk.CTkFrame(self, fg_color=("#0F0F1A", "#0F0F1A"))
-        self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # Верхняя панель с заголовком
-        self.title_frame = ctk.CTkFrame(self.main_frame, fg_color=("#1A1A2E", "#1A1A2E"), height=60)
-        self.title_frame.pack(fill="x", padx=5, pady=5)
-        self.title_frame.pack_propagate(False)
-        
-        self.title_label = ctk.CTkLabel(
-            self.title_frame,
-            text="🔒 NetPrivacy Verification Tool | @TheFirSStYfOreVer",
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color=("#3B8ED0", "#3B8ED0")
-        )
-        self.title_label.pack(side="left", padx=20, pady=10)
-        
-        self.subtitle_label = ctk.CTkLabel(
-            self.title_frame,
-            text="Research utility for encrypted node availability & security",
-            font=ctk.CTkFont(size=12),
-            text_color=("#888888", "#888888")
-        )
-        self.subtitle_label.pack(side="left", padx=10, pady=10)
-        
-        # Центральная область
-        self.center_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.center_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # Левая панель (контролы + логи)
-        self.left_panel = ctk.CTkFrame(self.center_frame, fg_color=("#161622", "#161622"), width=320)
-        self.left_panel.pack(side="left", fill="y", padx=5, pady=5)
-        self.left_panel.pack_propagate(False)
-        
-        # Панель управления
-        self.control_panel = ControlPanel(
-            self.left_panel,
-            on_start=self._start_verification,
-            on_stop=self._stop_verification,
-            fg_color="transparent"
-        )
-        self.control_panel.pack(fill="x", padx=5, pady=5)
-        
-        # Панель логов
-        self.log_panel = LogPanel(self.left_panel, fg_color="transparent")
-        self.log_panel.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # Правая область (результаты + инфо)
-        self.right_panel = ctk.CTkFrame(self.center_frame, fg_color=("#161622", "#161622"))
-        self.right_panel.pack(side="right", fill="both", expand=True, padx=5, pady=5)
-        
-        # Верхняя часть - результаты
-        self.results_panel = ResultsPanel(self.right_panel, fg_color="transparent")
-        self.results_panel.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # Нижняя часть - инфо панели
-        self.info_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent", height=280)
-        self.info_frame.pack(fill="both", padx=5, pady=5)
-        self.info_frame.pack_propagate(False)
-        
-        # Текущий узел
-        self.current_node_panel = CurrentNodePanel(
-            self.info_frame,
-            fg_color=("#1A1A2E", "#1A1A2E"),
-            width=400
-        )
-        self.current_node_panel.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-        
-        # Лучшая конфигурация
-        self.best_config_panel = BestConfigPanel(
-            self.info_frame,
-            fg_color=("#1A1A2E", "#1A1A2E"),
-            width=300
-        )
-        # Не расширяем по ширине, чтобы панель оставалась узкой
-        self.best_config_panel.pack(side="right", fill="y", expand=False, padx=5, pady=5)
-    
-    def _start_verification(self, concurrency: int):
-        """Запускает процесс верификации."""
+        self._sub_task: Optional[asyncio.Task] = None
+
+        self.is_running = False
+        self._forsage = False
+        self._target_cps = 10
+        self._source_mode = "auto"
+
+    async def start(self, *, target_cps: int, forsage: bool, source_mode: str) -> None:
         if self.is_running:
             return
-        
-        self.is_running = True
+
         self._stop_requested = False
-        self.semaphore_limit = concurrency
-        
-        # Очистка предыдущих результатов
-        self.results_panel.clear()
-        self.current_node_panel.reset()
-        self.best_config_panel.reset()
-        self.log_panel.clear()
-        
-        self.log_panel.add_log(f"Starting verification with concurrency: {concurrency}", "info")
-        
-        # Запускаем async задачу
-        self._current_verification = self.async_bridge.run_async(self._run_verification(), self._on_verification_complete)
-    
-    def _stop_verification(self):
-        """Останавливает процесс верификации полностью."""
+        self.is_running = True
+        self._tui._stop_requested = False
+        self._tui.is_running = True
+        self._forsage = bool(forsage)
+        self._target_cps = int(target_cps or 0)
+        self._source_mode = str(source_mode or "auto").lower()
+        self._runtime_tune_event.clear()
+
+        self.current_results = []
+        self._completed = 0
+        self._total = 0
+        async with self._stats_lock:
+            self._stats_done_times.clear()
+            self._stats_latencies_ms.clear()
+            self._stats_cps_ema = 0.0
+            self._stats_current_task = ""
+
+        if self._sub_task is None or self._sub_task.done():
+            self._sub_task = asyncio.create_task(self._ensure_sub_server())
+
+        self._emit_log(
+            f"Starting verification | Target CPS: {'MAX (Forsage)' if self._forsage else self._target_cps}",
+            "info",
+        )
+
+        self._main_task = asyncio.create_task(self._run())
+
+    async def set_runtime_settings(self, *, target_cps: int, forsage: bool) -> None:
         if not self.is_running:
+            self._forsage = bool(forsage)
+            self._target_cps = int(target_cps or 0)
             return
-        
-        self._stop_requested = True
-        self.log_panel.add_log("🛑 STOPPING: Cancelling all operations...", "warning")
-        
-        # 1. Отменяем все активные задачи проверки
-        cancelled_tasks = 0
-        for task in self._active_tasks:
-            if not task.done():
-                task.cancel()
-                cancelled_tasks += 1
-        if cancelled_tasks > 0:
-            self.log_panel.add_log(f"Cancelled {cancelled_tasks} check tasks", "info")
-        
-        # 2. Отменяем future в async bridge
-        cancelled = self.async_bridge.cancel_current()
-        if cancelled:
-            self.log_panel.add_log("Async tasks cancelled", "info")
-        
-        # 3. Убиваем все процессы xray через scanner
-        if self.scanner:
-            killed = self.scanner.kill_all_processes()
-            self.log_panel.add_log(f"Killed {killed} active processes", "info")
-        
-        # 4. Принудительно останавливаем сессии aiohttp
-        self.log_panel.add_log("Closing all connections...", "info")
-        
-        self.is_running = False
-        self.control_panel.reset_buttons()
-        self.log_panel.add_log("✓ Verification stopped", "success")
-    
-    def _on_verification_complete(self, results):
-        """Обработчик завершения верификации."""
-        self.is_running = False
-        self.control_panel.reset_buttons()
-        
-        if results:
-            self.log_panel.add_log(f"Verification complete. Total nodes: {len(results)}", "success")
-            self._save_results_to_file(results)
-        else:
-            self.log_panel.add_log("Verification finished with no results", "warning")
-    
-    async def _run_verification(self):
-        """Основная логика верификации."""
+
+        self._forsage = bool(forsage)
+        self._target_cps = int(target_cps or 0)
         try:
-            return await self._do_verification()
-        except asyncio.CancelledError:
-            self.log_panel.add_log("Verification cancelled by user", "warning")
-            return []
-    
-    async def _do_verification(self):
-        """Внутренняя логика верификации."""
-        src_path = SOURCES_PATH
-        
-        if not os.path.exists(src_path):
-            self.log_panel.add_log("ERROR: app/data/sources.txt not found!", "error")
-            return []
-        
-        self.scanner = LogicVerifier(tui=self)
-        # Поддержка PyInstaller runtime путей для xray.exe.
-        # Portable/source: RUNTIME_BASE/_MEIPASS/app/bin/xray.exe
-        # Installed via Inno Setup: exe at {app}/dist/main.exe, xray at {app}/app/bin/xray.exe
-        _exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else RUNTIME_BASE
-        _xray_candidates = [
-            os.path.join(RUNTIME_BASE, "app", "bin", "xray.exe"),             # _MEIPASS / source
-            os.path.join(_exe_dir, "core", "bin", "np_engine.exe"),           # installed (renamed)
-            os.path.join(_exe_dir, "core", "bin", "xray.exe"),               # portable layout
-            os.path.join(_exe_dir, "app", "bin", "xray.exe"),                # same-dir layout
-            os.path.join(os.path.dirname(_exe_dir), "app", "bin", "xray.exe"),  # installed fallback
-        ]
-        for xr_bin in _xray_candidates:
-            if os.path.isfile(xr_bin):
-                self.scanner.bin_path = xr_bin
-                break
-        all_links = []
-        
-        # Читаем источники
-        self.log_panel.add_log("Collecting proxy configurations...", "info")
-        
-        with open(src_path, "r", encoding="utf-8") as f:
-            sources = [line.strip() for line in f if line.strip()]
-        
-        self.log_panel.add_log(f"Loaded {len(sources)} sources", "info")
-        
-        source_mode = self.control_panel.get_source_mode()  # "auto" | "online" | "cache" | "parse"
-        remote_links_fetched: List[str] = []
-
-        if source_mode == "cache":
-            self.log_panel.add_log("📦 Source mode: CACHE (offline)", "info")
-            cached = _load_links_cache()
-            if cached:
-                all_links.extend(cached)
-                self.log_panel.add_log(f"Loaded {len(cached)} links from cache.", "info")
-            else:
-                self.log_panel.add_log("Cache is empty! Run in Auto / Online mode first.", "error")
-        elif source_mode == "parse":
-            # Независимый парсер: используем те же источники, что в sources.txt
-            self.log_panel.add_log("🧩 Parse mode: parsing sources...", "info")
-            parsed = await fetch_and_parse(sources, concurrency=min(self.semaphore_limit, 32))
-            if not parsed:
-                self.log_panel.add_log("Parser returned no links", "error")
-                return []
-            all_links.extend(parsed)
-            self.log_panel.add_log(f"Parser collected {len(parsed)} links", "success")
-        else:
-            async with aiohttp.ClientSession() as session:
-                for source in sources:
-                    if self._stop_requested:
-                        break
-
-                    # Проверяем отмену задачи
-                    try:
-                        asyncio.current_task().cancelled()
-                    except asyncio.CancelledError:
-                        break
-
-                    if is_proxy_link(source):
-                        all_links.append(source)
-                        self.log_panel.add_log(f"Direct link added: {source[:50]}...", "debug")
-                        continue
-
-                    if source.startswith(("http://", "https://")):
-                        try:
-                            self.log_panel.add_log(f"Loading: {source[:60]}...", "info")
-                            async with session.get(source, timeout=15) as resp:
-                                if resp.status != 200:
-                                    self.log_panel.add_log(f"HTTP {resp.status}: {source[:50]}", "error")
-                                    continue
-
-                                text = await resp.text()
-                                # Many subscription sources return base64-encoded content
-                                parse_text = text
-                                if not PROXY_REGEX.search(text):
-                                    try:
-                                        import base64 as _b64
-                                        clean = text.strip()
-                                        pad = (4 - len(clean) % 4) % 4
-                                        parse_text = _b64.b64decode(clean + "=" * pad).decode("utf-8")
-                                    except Exception:
-                                        parse_text = text
-                                full_links = []
-                                for match in PROXY_REGEX.finditer(parse_text):
-                                    full_links.append(match.group(0))
-
-                                unique_links = list(set(full_links))
-                                all_links.extend(unique_links)
-                                remote_links_fetched.extend(unique_links)
-                                self.log_panel.add_log(f"Found {len(unique_links)} links from {source[:50]}...", "success")
-                        except asyncio.CancelledError:
-                            break
-                        except Exception as e:
-                            self.log_panel.add_log(f"Error loading {source[:50]}: {e}", "error")
-
-            if remote_links_fetched:
-                _save_links_cache(remote_links_fetched)
-                self.control_panel.update_cache_info()
-                self.log_panel.add_log(
-                    f"Cache updated: {len(remote_links_fetched)} remote links saved.", "info"
-                )
-            elif source_mode == "auto":
-                cached = _load_links_cache()
-                if cached:
-                    all_links.extend(cached)
-                    self.log_panel.add_log(
-                        f"GitHub unavailable — loaded {len(cached)} links from cache.", "warning"
-                    )
-                else:
-                    self.log_panel.add_log(
-                        "No remote links fetched and no cache available.", "error"
-                    )
-            else:  # online — без фоллбэка на кэш
-                self.log_panel.add_log(
-                    "🌐 Online mode: remote sources unavailable. Check your connection.", "error"
-                )
-
-        # Дедупликация
-        all_links = list(dict.fromkeys(all_links))
-        
-        if not all_links:
-            self.log_panel.add_log("No configurations found!", "error")
-            return []
-        
-        self.log_panel.add_log(f"Total unique links: {len(all_links)}", "info")
-        
-        # Проверка
-        sem = asyncio.BoundedSemaphore(self.semaphore_limit)
-        # Создаем Task явно чтобы можно было отменить
-        self._active_tasks = [asyncio.create_task(self.scanner.check_connection(link, sem)) for link in all_links]
-        
-        results = []
-        completed = 0
-        total = len(self._active_tasks)
-        
-        self.log_panel.add_log(f"Starting check of {total} nodes...", "info")
-        
-        try:
-            for task in asyncio.as_completed(self._active_tasks):
-                if self._stop_requested:
-                    break
-                
-                try:
-                    res = await task
-                    completed += 1
-                    
-                    # Обновляем прогресс
-                    self.after(0, lambda c=completed, t=total: self.current_node_panel.update_progress(c, t))
-                    
-                    if res is not None:
-                        results.append(res)
-                        
-                        # Обновляем UI
-                        self.after(0, lambda r=res: self._add_result_to_ui(r))
-                        
-                        accessible_count = res.get("accessible_count", 0)
-                        reliability_mark = "[HIGH RELIABILITY]" if res.get("is_high_reliability") else f"✓ {res.get('accessibility', '0/4')}"
-                        gemini_mark = " | Gemini_Ready" if res.get("gemini_ready") else ""
-                        
-                        self.log_panel.add_log(
-                            f"{res['name'][:40]} | {res['ping']}ms | {reliability_mark}{gemini_mark}",
-                            "success" if accessible_count >= 2 else "warning"
-                        )
-                    
-                    if completed % 5 == 0 or completed == total:
-                        self.log_panel.add_log(f"Progress: {completed}/{total} ({completed*100//total}%)", "info")
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    self.log_panel.add_log(f"Check error: {e}", "error")
-        finally:
-            # Отменяем все оставшиеся задачи
-            for task in self._active_tasks:
-                if not task.done():
-                    task.cancel()
-            self._active_tasks = []
-        
-        return results
-    
-    def _add_result_to_ui(self, result: dict):
-        """Добавляет результат в UI (вызывается в main thread)."""
-        self.results_panel.add_result(result)
-        
-        if result.get("is_high_reliability"):
-            self.best_config_panel.update_config(result)
-        # Обновляем кэш результатов, чтобы сервер /sub видел актуальные данные
-        try:
-            self.current_results.append(result)
+            self._emit_log(
+                f"Runtime update | Target CPS: {'MAX (Forsage)' if self._forsage else self._target_cps}",
+                "info",
+            )
         except Exception:
             pass
-    
-    def _save_results_to_file(self, results: list):
-        """Сохраняет результаты в файл."""
         try:
-            # Сортируем
-            results.sort(key=lambda x: (
-                -x.get("accessible_count", 0),
-                x.get("avg_resource_rtt", 99999)
-            ))
-            
-            # Сохраняем
-            os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
-            with open(RESULTS_PATH, "w", encoding="utf-8") as f:
-                for r in results:
-                    if r.get("is_high_reliability"):
-                        gemini_tag = " | Gemini_Ready" if r.get("gemini_ready") else ""
-                        f.write(f"# HIGH RELIABILITY {r.get('accessibility')} | Avg: {r.get('avg_resource_rtt')}ms | {r['name']}{gemini_tag}\n")
-                        f.write(f"{r['link']}\n\n")
-                
-                for r in results:
-                    if not r.get("is_high_reliability"):
-                        gemini_tag = " | Gemini_Ready" if r.get("gemini_ready") else ""
-                        f.write(f"# {r.get('accessibility')} | Avg: {r.get('avg_resource_rtt')}ms | {r['name']}{gemini_tag}\n")
-                        f.write(f"{r['link']}\n\n")
-            
-            self.log_panel.add_log(f"Results saved to {RESULTS_PATH}", "success")
-        except Exception as e:
-            self.log_panel.add_log(f"Save error: {e}", "error")
-    
-    # Методы для совместимости с scanner.py
-    async def log(self, message: str):
-        """Логирование для совместимости с scanner."""
+            self._runtime_tune_event.set()
+        except Exception:
+            pass
+
+    async def stop(self) -> None:
+        if not self.is_running:
+            return
+
+        self._emit_log("STOPPING: cancelling operations...", "warning")
+        self._stop_requested = True
+        self.is_running = False
+        self._tui._stop_requested = True
+        self._tui.is_running = False
+
+        if self._main_task and (not self._main_task.done()):
+            self._main_task.cancel()
+
+        for task in list(self._active_tasks):
+            try:
+                if task and (not task.done()):
+                    task.cancel()
+            except Exception:
+                pass
+
+        if self._active_tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*self._active_tasks, return_exceptions=True)
+        self._active_tasks = []
+
+        if self.scanner is not None:
+            try:
+                await asyncio.to_thread(self.scanner.kill_all_processes)
+            except Exception:
+                pass
+            try:
+                await asyncio.to_thread(self.scanner.kill_shadow_processes, "npvt_run_")
+            except Exception:
+                pass
+            try:
+                await asyncio.to_thread(self.scanner.cleanup_temp_now)
+            except Exception:
+                pass
+
+        self._emit_log("Verification stopped", "success")
+
+    async def shutdown(self) -> None:
+        try:
+            await self.stop()
+        finally:
+            try:
+                await self.sub_server.stop()
+            except Exception:
+                pass
+
+    def _emit_log(self, message: str, tag: str = "info") -> None:
+        try:
+            self._on_log(message, tag)
+        except Exception:
+            pass
+
+    def _set_current_task(self, name: str) -> None:
+        try:
+            # Called from LogicVerifier synchronous context.
+            self._stats_current_task = str(name or "")
+        except Exception:
+            pass
+
+    def _fast_log_callback(self, message: str) -> None:
+        try:
+            if message.startswith("[DEBUG]") or message.startswith("[*]"):
+                return
+            if message.startswith("[XRAY]") or message.startswith("[CLEANUP]"):
+                return
+        except Exception:
+            pass
+
         tag = "info"
         if "[ERROR]" in message or "[!]" in message:
             tag = "error"
@@ -1465,54 +316,1215 @@ class NetPrivacyApp(ctk.CTk):
             tag = "success"
         elif "[WARN]" in message:
             tag = "warning"
-        elif "[DEBUG]" in message or "[*]" in message:
-            tag = "debug"
-        
-        self.after(0, lambda m=message, t=tag: self.log_panel.add_log(m, t))
-    
-    def set_current_config(self, config: dict, name: str = ""):
-        """Устанавливает текущую конфигурацию для отображения."""
-        self.after(0, lambda c=config, n=name: self.current_node_panel.update_node(c, n))
-    
-    def _kill_scanner_processes(self):
-        """Гарантированно убивает все дочерние процессы xray."""
+        elif "[INACTIVE]" in message:
+            tag = "warning"
+        self._emit_log(message, tag)
+
+    async def _ensure_sub_server(self) -> None:
         try:
-            if self.scanner:
-                self.scanner.kill_all_processes()
+            await self.sub_server.start()
+            ok = await self.sub_server.wait_until_started(1.5)
+            if ok:
+                self._emit_log(f"[SUB] Local subscription server: {SUBSCRIPTION_URL}", "info")
         except Exception:
             pass
 
-    def on_closing(self):
-        """Обработчик закрытия окна."""
-        self._stop_requested = True
-        self._kill_scanner_processes()
+    async def _run(self) -> None:
         try:
-            self.async_bridge.run_async(self.sub_server.stop())
+            results = await self._do_verification()
+            if results:
+                self._emit_log(f"Verification complete. Total nodes: {len(results)}", "success")
+                await asyncio.to_thread(self._save_results_to_file, results)
+            else:
+                self._emit_log("Verification finished with no results", "warning")
+        except asyncio.CancelledError:
+            self._emit_log("Verification cancelled", "warning")
+        except Exception as e:
+            self._emit_log(f"[FATAL] {str(e)[:200]}", "error")
+        finally:
+            self.is_running = False
+            self._tui.is_running = False
+
+    def _save_results_to_file(self, results: list) -> None:
+        try:
+            results.sort(
+                key=lambda x: (-x.get("accessible_count", 0), x.get("avg_resource_rtt", 99999))
+            )
+
+            os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
+            with open(RESULTS_PATH, "w", encoding="utf-8") as f:
+                for r in results:
+                    if r.get("is_high_reliability"):
+                        f.write(
+                            f"# HIGH RELIABILITY {r.get('accessibility')} | Avg: {r.get('avg_resource_rtt')}ms | {r['name']}\n"
+                        )
+                        f.write(f"{r['link']}\n\n")
+
+                for r in results:
+                    if not r.get("is_high_reliability"):
+                        f.write(
+                            f"# {r.get('accessibility')} | Avg: {r.get('avg_resource_rtt')}ms | {r['name']}\n"
+                        )
+                        f.write(f"{r['link']}\n\n")
+
+            self._emit_log(f"Results saved to {RESULTS_PATH}", "success")
+        except Exception as e:
+            self._emit_log(f"Save error: {e}", "error")
+
+    async def _do_verification(self) -> List[dict]:
+        src_path = SOURCES_PATH
+
+        if not os.path.exists(src_path):
+            self._emit_log("ERROR: app/data/sources.txt not found!", "error")
+            return []
+
+        self.scanner = LogicVerifier(tui=self._tui, log_callback=self._fast_log_callback)
+
+        _exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else RUNTIME_BASE
+        _xray_candidates = [
+            os.path.join(RUNTIME_BASE, "app", "bin", "npvt_core.exe"),
+            os.path.join(RUNTIME_BASE, "app", "bin", "xray.exe"),
+            os.path.join(_exe_dir, "core", "bin", "npvt_core.exe"),
+            os.path.join(_exe_dir, "core", "bin", "np_engine.exe"),
+            os.path.join(_exe_dir, "core", "bin", "xray.exe"),
+            os.path.join(_exe_dir, "app", "bin", "xray.exe"),
+            os.path.join(os.path.dirname(_exe_dir), "app", "bin", "xray.exe"),
+        ]
+        for xr_bin in _xray_candidates:
+            if os.path.isfile(xr_bin):
+                self.scanner.bin_path = xr_bin
+                break
+        try:
+            self.scanner._engine_path = self.scanner.bin_path
         except Exception:
             pass
-        self.async_bridge.stop()
-        self.destroy()
+        try:
+            self.scanner.deep_checks = True
+        except Exception:
+            pass
+
+        all_links: List[str] = []
+
+        self._emit_log("Collecting proxy configurations...", "info")
+        with open(src_path, "r", encoding="utf-8") as f:
+            sources = [line.strip() for line in f if line.strip()]
+        self._emit_log(f"Loaded {len(sources)} sources", "info")
+
+        source_mode = self._source_mode
+        remote_links_fetched: List[str] = []
+
+        if source_mode == "cache":
+            self._emit_log("Source mode: CACHE (offline)", "info")
+            cached = _load_links_cache()
+            if cached:
+                all_links.extend(cached)
+                self._emit_log(f"Loaded {len(cached)} links from cache.", "info")
+            else:
+                self._emit_log("Cache is empty! Run in Auto / Online mode first.", "error")
+        elif source_mode == "parse":
+            self._emit_log("Parse mode: parsing sources...", "info")
+            parsed = await fetch_and_parse(sources, concurrency=min(max(1, self._target_cps), 32))
+            if not parsed:
+                self._emit_log("Parser returned no links", "error")
+                return []
+            all_links.extend(parsed)
+            self._emit_log(f"Parser collected {len(parsed)} links", "success")
+        else:
+            async with aiohttp.ClientSession() as session:
+                for source in sources:
+                    if self._stop_requested or (not self.is_running):
+                        break
+
+                    if is_proxy_link(source):
+                        all_links.append(source)
+                        continue
+
+                    if source.startswith(("http://", "https://")):
+                        try:
+                            self._emit_log(f"Loading: {source[:60]}...", "info")
+                            async with session.get(source, timeout=15) as resp:
+                                if resp.status != 200:
+                                    self._emit_log(f"HTTP {resp.status}: {source[:50]}", "error")
+                                    continue
+
+                                text = await resp.text()
+                                parse_text = text
+                                if not PROXY_REGEX.search(text):
+                                    try:
+                                        import base64 as _b64
+
+                                        clean = text.strip()
+                                        pad = (4 - len(clean) % 4) % 4
+                                        parse_text = _b64.b64decode(clean + "=" * pad).decode("utf-8")
+                                    except Exception:
+                                        parse_text = text
+
+                                full_links = [m.group(0) for m in PROXY_REGEX.finditer(parse_text)]
+                                unique_links = list(set(full_links))
+                                all_links.extend(unique_links)
+                                remote_links_fetched.extend(unique_links)
+                                self._emit_log(
+                                    f"Found {len(unique_links)} links from {source[:50]}...",
+                                    "success",
+                                )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            self._emit_log(f"Error loading {source[:50]}: {e}", "error")
+
+            if remote_links_fetched:
+                _save_links_cache(remote_links_fetched)
+                self._emit_log(
+                    f"Cache updated: {len(remote_links_fetched)} remote links saved.",
+                    "info",
+                )
+            elif source_mode == "auto":
+                cached = _load_links_cache()
+                if cached:
+                    all_links.extend(cached)
+                    self._emit_log(
+                        f"GitHub unavailable — loaded {len(cached)} links from cache.",
+                        "warning",
+                    )
+                else:
+                    self._emit_log("No remote links fetched and no cache available.", "error")
+            else:
+                self._emit_log(
+                    "Online mode: remote sources unavailable. Check your connection.",
+                    "error",
+                )
+
+        all_links = list(dict.fromkeys(all_links))
+        if not all_links:
+            self._emit_log("No configurations found!", "error")
+            return []
+
+        if self._stop_requested or (not self.is_running):
+            return []
+
+        total = len(all_links)
+        self._total = total
+        self._emit_log(f"Total unique links: {total}", "info")
+
+        results: List[dict] = []
+        completed = 0
+
+        q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        for link in all_links:
+            q.put_nowait(link)
+
+        busy_workers = 0
+        busy_lock = asyncio.Lock()
+
+        worker_tasks: List[asyncio.Task] = []
+
+        max_workers_non_forsage = min(HARD_MAX_WORKERS_AT_100, total)
+        max_workers_forsage = min(max(HARD_MAX_WORKERS_AT_100, 400), total)
+
+        def desired_workers() -> int:
+            forsage_now = bool(self._forsage)
+            target_cps_now = int(self._target_cps or 0)
+            cap = max_workers_forsage if forsage_now else max_workers_non_forsage
+            if forsage_now:
+                return cap
+            return min(cap, max(1, target_cps_now * 3))
+
+        def spawn_workers(n: int) -> None:
+            while len(worker_tasks) < n:
+                wid = len(worker_tasks)
+                t = asyncio.create_task(worker(wid))
+                worker_tasks.append(t)
+                self._active_tasks.append(t)
+
+        if self._forsage:
+            self._emit_log(
+                f"Target CPS: MAX (Forsage) | Workers: {desired_workers()} | Max: {max_workers_forsage}",
+                "info",
+            )
+        else:
+            self._emit_log(
+                f"Target CPS: {int(self._target_cps or 0)} | Workers: {desired_workers()} | Max: {max_workers_non_forsage}",
+                "info",
+            )
+
+        def emit_stats(active_procs: int, cps_val: float, avg_lat: float) -> None:
+            snap = _UiStatsSnapshot(
+                cps=cps_val,
+                active_workers=active_procs,
+                avg_latency_ms=avg_lat,
+                current_task=str(self._stats_current_task or ""),
+                completed=completed,
+                total=total,
+            )
+            try:
+                self._on_stats(snap)
+            except Exception:
+                pass
+
+        async def worker(worker_id: int) -> None:
+            nonlocal completed
+            nonlocal busy_workers
+            while True:
+                if self._stop_requested or (not self.is_running):
+                    return
+                try:
+                    link = await q.get()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return
+
+                if link is None:
+                    try:
+                        q.task_done()
+                    except Exception:
+                        pass
+                    return
+
+                async with busy_lock:
+                    busy_workers += 1
+
+                try:
+                    t0 = time.monotonic()
+                    res = await self.scanner.check_connection(link, None)  # type: ignore[union-attr]
+                    dt_ms = (time.monotonic() - t0) * 1000.0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._emit_log(f"[WORKER ERROR] {str(e)[:120]}", "error")
+                    res = None
+                    dt_ms = 0.0
+                finally:
+                    try:
+                        q.task_done()
+                    except Exception:
+                        pass
+
+                    async with busy_lock:
+                        busy_workers = max(0, busy_workers - 1)
+
+                completed += 1
+                self._completed = completed
+
+                now_ts = time.monotonic()
+                async with self._stats_lock:
+                    self._stats_done_times.append(now_ts)
+                    if dt_ms > 0:
+                        self._stats_latencies_ms.append(float(dt_ms))
+
+                if res is not None:
+                    results.append(res)
+                    try:
+                        self._on_results_batch([res])
+                    except Exception:
+                        pass
+                    try:
+                        self.current_results.append(res)
+                    except Exception:
+                        pass
+
+                if (completed % 25 == 0) or (completed == total):
+                    self._emit_log(
+                        f"Progress: {completed}/{total} ({(completed * 100) // max(1, total)}%)",
+                        "info",
+                    )
+
+                if completed >= total:
+                    return
+
+        async def controller_and_stats() -> None:
+            window_s = 1.5
+            alpha = 0.22
+            while True:
+                if self._stop_requested or (not self.is_running):
+                    return
+
+                try:
+                    try:
+                        await asyncio.wait_for(self._runtime_tune_event.wait(), timeout=0.25)
+                    except asyncio.TimeoutError:
+                        pass
+                    self._runtime_tune_event.clear()
+                except Exception:
+                    await asyncio.sleep(0.25)
+
+                try:
+                    spawn_workers(desired_workers())
+                except Exception:
+                    pass
+
+                async with busy_lock:
+                    active_busy = int(busy_workers)
+
+                now_ts = time.monotonic()
+                async with self._stats_lock:
+                    while self._stats_done_times and (now_ts - self._stats_done_times[0] > window_s):
+                        self._stats_done_times.popleft()
+                    inst_cps = (len(self._stats_done_times) / window_s) if window_s > 0 else 0.0
+                    self._stats_cps_ema = (self._stats_cps_ema * (1.0 - alpha)) + (inst_cps * alpha)
+                    cps_val = float(self._stats_cps_ema)
+                    if self._stats_latencies_ms:
+                        avg_lat = float(
+                            sum(self._stats_latencies_ms) / max(1, len(self._stats_latencies_ms))
+                        )
+                    else:
+                        avg_lat = 0.0
+
+                emit_stats(active_busy, cps_val, avg_lat)
+
+                if completed >= total:
+                    return
+
+        self._active_tasks = []
+        spawn_workers(desired_workers())
+        stats_task = asyncio.create_task(controller_and_stats())
+        self._active_tasks.append(stats_task)
+
+        try:
+            await q.join()
+        finally:
+            for t in list(worker_tasks):
+                try:
+                    t.cancel()
+                except Exception:
+                    pass
+            try:
+                stats_task.cancel()
+            except Exception:
+                pass
+
+            all_tasks = list(worker_tasks) + [stats_task]
+            if all_tasks:
+                with contextlib.suppress(Exception):
+                    await asyncio.gather(*all_tasks, return_exceptions=True)
+
+            self._active_tasks = []
+
+        emit_stats(0, 0.0, 0.0)
+        return results
 
 
-def main():
-    """Точка входа."""
-    import atexit
-    app = NetPrivacyApp()
-    app.protocol("WM_DELETE_WINDOW", app.on_closing)
-    atexit.register(app._kill_scanner_processes)
-    
-    print("""
+class NPVTFletApp:
+    def __init__(self, page: ft.Page) -> None:
+        self.page = page
+
+        self._log_buffer: deque = deque()
+        self._result_buffer: deque = deque()
+        self._best_results_by_link: dict = {}
+        self._best_results_keep = 200
+        self._best_results_topn = 20
+        self._stats_snapshot = _UiStatsSnapshot()
+        self._dirty = asyncio.Event()
+
+        self.controller = VerificationController(
+            on_log=self._on_log,
+            on_results_batch=self._on_results_batch,
+            on_stats=self._on_stats,
+        )
+
+        self._ui_task: Optional[asyncio.Task] = None
+
+        self._snack = ft.SnackBar(ft.Text(""))
+        try:
+            self.page.overlay.append(self._snack)
+        except Exception:
+            pass
+
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        self.page.title = "NetPrivacy Verification Tool | @TheFirSStYfOreVer"
+        self.page.theme_mode = ft.ThemeMode.DARK
+        self.page.bgcolor = "#0B0F14"
+        self.page.padding = 16
+
+        self.page.dark_theme = ft.Theme(color_scheme_seed=ft.Colors.CYAN)
+
+        self.target_cps_dd = ft.Dropdown(
+            label="Target CPS",
+            width=160,
+            options=[
+                ft.dropdown.Option("5"),
+                ft.dropdown.Option("10"),
+                ft.dropdown.Option("20"),
+                ft.dropdown.Option("MAX"),
+            ],
+            value="10",
+        )
+
+        try:
+            self.target_cps_dd.on_change = self._on_runtime_cps_change
+        except Exception:
+            pass
+
+        self.source_mode_dd = ft.Dropdown(
+            label="Source mode",
+            width=160,
+            options=[
+                ft.dropdown.Option("Auto"),
+                ft.dropdown.Option("Online"),
+                ft.dropdown.Option("Cache"),
+                ft.dropdown.Option("Parse"),
+            ],
+            value="Auto",
+        )
+
+        self.vpn_client_dd = ft.Dropdown(
+            label="VPN client",
+            width=316,
+            options=[
+                ft.dropdown.Option("Happ"),
+                ft.dropdown.Option("Clash"),
+                ft.dropdown.Option("Hiddify"),
+                ft.dropdown.Option("v2rayN"),
+                ft.dropdown.Option("NekoRay"),
+                ft.dropdown.Option("Browser"),
+            ],
+            value="Happ",
+        )
+
+        self.start_btn = ft.ElevatedButton(
+            "START",
+            icon=ft.Icons.PLAY_ARROW,
+            on_click=self._on_start_click,
+            height=44,
+        )
+        self.stop_btn = ft.ElevatedButton(
+            "STOP",
+            icon=ft.Icons.STOP,
+            on_click=self._on_stop_click,
+            height=44,
+            disabled=True,
+        )
+
+        self.progress_text = ft.Text("0/0", size=12, color="#94A3B8")
+        self.progress_bar = ft.ProgressBar(value=0.0, height=8)
+
+        self.cps_text = ft.Text(
+            "0.0",
+            size=74,
+            weight=ft.FontWeight.W_900,
+            color="#22D3EE",
+            font_family="Consolas",
+        )
+        self.cps_label = ft.Text("CPS", size=14, color="#94A3B8")
+        self.cps_ring = ft.ProgressRing(
+            value=0.0,
+            width=170,
+            height=170,
+            stroke_width=10,
+            color="#22D3EE",
+            bgcolor="#111827",
+        )
+
+        self.active_workers_text = ft.Text("0", size=28, weight=ft.FontWeight.BOLD)
+        self.avg_latency_text = ft.Text("0 ms", size=28, weight=ft.FontWeight.BOLD)
+        self.current_task_text = ft.Text(
+            "",
+            size=14,
+            color="#E2E8F0",
+            overflow=ft.TextOverflow.ELLIPSIS,
+            max_lines=1,
+        )
+
+        self.logs_view = ft.ListView(expand=True, spacing=2, auto_scroll=True)
+        self.results_view = ft.ListView(expand=True, spacing=6, auto_scroll=False)
+
+        self.copy_logs_btn = ft.IconButton(
+            icon=ft.Icons.CONTENT_COPY,
+            tooltip="Copy logs",
+            on_click=self._on_copy_logs_click,
+        )
+
+        self.copy_subscription_btn = ft.ElevatedButton(
+            "COPY SUBSCRIPTION",
+            icon=ft.Icons.COPY_ALL,
+            on_click=self._on_copy_subscription_click,
+            height=44,
+        )
+
+        self.copy_best_btn = ft.ElevatedButton(
+            "Скопировать лучший конфиг",
+            icon=ft.Icons.STAR,
+            on_click=self._on_copy_best_click,
+            height=44,
+        )
+
+        self.import_subscription_btn = ft.ElevatedButton(
+            "Импорт подписки",
+            icon=ft.Icons.LAUNCH,
+            on_click=self._on_import_subscription_click,
+            height=44,
+        )
+
+        left_panel = ft.Container(
+            width=340,
+            padding=12,
+            bgcolor="#0B0F14",
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    self._card(
+                        "CONTROL",
+                        ft.Column(
+                            spacing=12,
+                            controls=[
+                                ft.Row([self.start_btn, self.stop_btn], spacing=12),
+                                ft.Row([self.target_cps_dd, self.source_mode_dd], spacing=12),
+                            ],
+                        ),
+                    ),
+                    self._card(
+                        "SUBSCRIPTION",
+                        ft.Column(
+                            spacing=10,
+                            controls=[
+                                self.copy_best_btn,
+                                self.vpn_client_dd,
+                                self.import_subscription_btn,
+                                ft.Text(
+                                    SUBSCRIPTION_URL,
+                                    size=12,
+                                    color="#94A3B8",
+                                    selectable=True,
+                                ),
+                                self.copy_subscription_btn,
+                            ],
+                        ),
+                    ),
+                    self._card(
+                        "PROGRESS",
+                        ft.Column(
+                            spacing=10,
+                            controls=[
+                                self.progress_text,
+                                self.progress_bar,
+                            ],
+                        ),
+                    ),
+                    self._card(
+                        "LOGS",
+                        ft.Column(
+                            expand=True,
+                            spacing=8,
+                            controls=[
+                                ft.Row(
+                                    [ft.Text("Stream"), ft.Container(expand=True), self.copy_logs_btn],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                                ft.Container(
+                                    expand=True,
+                                    padding=8,
+                                    bgcolor="#0F172A",
+                                    border_radius=12,
+                                    content=self.logs_view,
+                                ),
+                            ],
+                        ),
+                        expand=True,
+                    ),
+                ],
+                expand=True,
+            ),
+        )
+
+        self.speedometer_card = ft.Container(
+            padding=18,
+            border_radius=18,
+            border=ft.Border.all(1, "#1F2937"),
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment.TOP_LEFT,
+                end=ft.Alignment.BOTTOM_RIGHT,
+                colors=["#060B10", "#0B1220"],
+            ),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Stack(
+                        width=240,
+                        height=240,
+                        controls=[
+                            ft.Container(alignment=ft.Alignment.CENTER, content=self.cps_ring),
+                            ft.Container(
+                                alignment=ft.Alignment.CENTER,
+                                content=ft.Column(
+                                    spacing=0,
+                                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                    controls=[
+                                        self.cps_text,
+                                        self.cps_label,
+                                    ],
+                                ),
+                            ),
+                        ],
+                    ),
+                    ft.Column(
+                        expand=True,
+                        spacing=12,
+                        controls=[
+                            ft.Row(
+                                spacing=12,
+                                controls=[
+                                    self._metric_tile("Active workers", self.active_workers_text),
+                                    self._metric_tile("Avg latency", self.avg_latency_text),
+                                ],
+                            ),
+                            self._card(
+                                "CURRENT TASK",
+                                ft.Container(
+                                    padding=10,
+                                    bgcolor="#0F172A",
+                                    border_radius=12,
+                                    content=self.current_task_text,
+                                ),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
+        right_panel = ft.Container(
+            expand=True,
+            padding=12,
+            bgcolor="#0B0F14",
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    self._card(
+                        "PERFORMANCE",
+                        self.speedometer_card,
+                    ),
+                    self._card(
+                        "RESULTS",
+                        ft.Container(
+                            expand=True,
+                            padding=8,
+                            bgcolor="#0F172A",
+                            border_radius=12,
+                            content=self.results_view,
+                        ),
+                        expand=True,
+                    ),
+                ],
+                expand=True,
+            ),
+        )
+
+        root = ft.Row([left_panel, right_panel], expand=True, spacing=12)
+        self.page.add(root)
+
+        def on_close(e) -> None:
+            self.page.run_task(self.controller.shutdown)
+
+        self.page.on_close = on_close
+
+    def _card(self, title: str, content: ft.Control, *, expand: bool = False) -> ft.Container:
+        header = ft.Text(title, size=12, color="#94A3B8", weight=ft.FontWeight.BOLD)
+        col = ft.Column([header, content], spacing=10, expand=expand)
+        return ft.Container(
+            padding=14,
+            border_radius=16,
+            border=ft.Border.all(1, "#1F2937"),
+            bgcolor="#111827",
+            content=col,
+            expand=expand,
+        )
+
+    def _metric_tile(self, title: str, value: ft.Text) -> ft.Container:
+        return ft.Container(
+            expand=True,
+            padding=14,
+            border_radius=16,
+            bgcolor="#111827",
+            border=ft.Border.all(1, "#1F2937"),
+            content=ft.Column(
+                spacing=6,
+                controls=[
+                    ft.Text(title, size=12, color="#94A3B8"),
+                    value,
+                ],
+            ),
+        )
+
+    def _on_log(self, message: str, tag: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._log_buffer.append((f"[{ts}] {message}", tag))
+        if len(self._log_buffer) > 3000:
+            for _ in range(800):
+                try:
+                    self._log_buffer.popleft()
+                except Exception:
+                    break
+        self._dirty.set()
+
+    def _on_results_batch(self, batch: List[dict]) -> None:
+        self._result_buffer.extend(batch)
+        try:
+            if len(self._result_buffer) > 6000:
+                for _ in range(3500):
+                    try:
+                        self._result_buffer.popleft()
+                    except Exception:
+                        break
+        except Exception:
+            pass
+        self._dirty.set()
+
+    def _on_stats(self, snap: _UiStatsSnapshot) -> None:
+        self._stats_snapshot = snap
+        self._dirty.set()
+
+    async def _on_start_click(self, e) -> None:
+        raw = str(self.target_cps_dd.value or "10").strip()
+        if raw.upper() == "MAX":
+            forsage = True
+            target_cps = 0
+        else:
+            forsage = False
+            try:
+                target_cps = max(1, int(raw))
+            except Exception:
+                target_cps = 10
+
+        self._apply_forsage_style(forsage)
+        self._clear_views()
+
+        self.start_btn.disabled = True
+        self.stop_btn.disabled = False
+        self.page.update()
+
+        if self._ui_task is None or self._ui_task.done():
+            self._ui_task = asyncio.create_task(self._ui_flush_loop())
+
+        await self.controller.start(
+            target_cps=target_cps,
+            forsage=forsage,
+            source_mode=str(self.source_mode_dd.value or "Auto").lower(),
+        )
+
+    def _on_stop_click(self, e) -> None:
+        self.stop_btn.disabled = True
+        self.page.update()
+        self.page.run_task(self._stop_async)
+
+    async def _stop_async(self) -> None:
+        await self.controller.stop()
+        self.start_btn.disabled = False
+        self.stop_btn.disabled = True
+        self._apply_forsage_style(False)
+        self.page.update()
+
+    def _show_snack(self, message: str) -> None:
+        try:
+            self._snack.content = ft.Text(message)
+            self._snack.open = True
+            self.page.update()
+        except Exception:
+            pass
+
+    def _pick_best_link(self) -> Optional[str]:
+        results = list(getattr(self.controller, "current_results", []) or [])
+        if not results:
+            return None
+
+        def get_accessible_count(r: dict) -> int:
+            ac = r.get("accessible_count")
+            try:
+                if ac is not None:
+                    return int(ac)
+            except Exception:
+                pass
+
+            acc = str(r.get("accessibility") or "")
+            m = re.match(r"\s*(\d+)\s*/", acc)
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    return 0
+            return 0
+
+        def key(r: dict):
+            hi = 1 if r.get("is_high_reliability") else 0
+            ac = get_accessible_count(r)
+            rtt = r.get("avg_resource_rtt", 99999)
+            try:
+                rtt = float(rtt)
+            except Exception:
+                rtt = 99999.0
+            return (hi, ac, -rtt)
+
+        try:
+            best = max(results, key=key)
+            link = best.get("link")
+            return str(link) if link else None
+        except Exception:
+            return None
+
+    def _on_copy_best_click(self, e) -> None:
+        try:
+            self.page.run_task(self._copy_best_async)
+        except Exception:
+            pass
+
+    async def _copy_best_async(self) -> None:
+        link = self._pick_best_link()
+        if not link:
+            self._show_snack("Лучший конфиг пока не найден")
+            return
+
+        copied = False
+        try:
+            if HAS_PYPERCLIP:
+                pyperclip.copy(link)
+                copied = True
+        except Exception:
+            copied = False
+
+        if not copied:
+            try:
+                await ft.Clipboard().set(link)
+                copied = True
+            except Exception:
+                copied = False
+
+        if copied:
+            self._show_snack("Лучший конфиг скопирован!")
+        else:
+            self._show_snack("Не удалось скопировать конфиг")
+
+    def _on_import_subscription_click(self, e) -> None:
+        try:
+            self.page.run_task(self._import_subscription_async)
+        except Exception:
+            pass
+
+    async def _import_subscription_async(self) -> None:
+        try:
+            await self.controller._ensure_sub_server()
+        except Exception:
+            pass
+
+        client = str(getattr(self.vpn_client_dd, "value", "Happ") or "Happ").strip()
+        import_url = await self._build_import_url(client)
+
+        if client in {"v2rayN", "NekoRay"}:
+            copied = False
+            try:
+                if HAS_PYPERCLIP:
+                    pyperclip.copy(SUBSCRIPTION_URL)
+                    copied = True
+            except Exception:
+                copied = False
+            if not copied:
+                try:
+                    await ft.Clipboard().set(SUBSCRIPTION_URL)
+                except Exception:
+                    pass
+            self._show_snack("Ссылка на подписку скопирована. Импортируй её в клиент.")
+
+        opened = False
+        try:
+            if sys.platform == "win32":
+                try:
+                    os.startfile(import_url)  # type: ignore[attr-defined]
+                    opened = True
+                except Exception:
+                    opened = False
+
+            if not opened:
+                try:
+                    webbrowser.open(import_url, new=1)
+                    opened = True
+                except Exception:
+                    opened = False
+        except Exception:
+            opened = False
+
+        if not opened:
+            try:
+                if HAS_PYPERCLIP:
+                    pyperclip.copy(import_url)
+                else:
+                    await ft.Clipboard().set(import_url)
+            except Exception:
+                pass
+            self._show_snack("Не удалось открыть ссылку. Скопировал deeplink в буфер.")
+        else:
+            self._show_snack("Открываю подписку...")
+
+    async def _build_import_url(self, client: str) -> str:
+        c = (client or "").strip().lower()
+        encoded = quote(SUBSCRIPTION_URL, safe="")
+
+        if c == "browser":
+            return SUBSCRIPTION_URL
+
+        if c == "clash":
+            return f"clash://install-config?url={encoded}"
+
+        if c == "hiddify":
+            return f"hiddify://install-sub?url={encoded}#NPVT"
+
+        if c == "happ":
+            return f"happ://add/{SUBSCRIPTION_URL}"
+
+        return SUBSCRIPTION_URL
+
+    def _on_runtime_cps_change(self, e) -> None:
+        try:
+            if not self.controller.is_running:
+                return
+            raw = str(self.target_cps_dd.value or "10").strip()
+            forsage = raw.upper() == "MAX"
+            target = 0 if forsage else int(raw)
+            self._apply_forsage_style(forsage)
+            self.page.run_task(self.controller.set_runtime_settings, target_cps=target, forsage=forsage)
+        except Exception:
+            pass
+
+    def _on_copy_subscription_click(self, e) -> None:
+        try:
+            self.page.run_task(self._copy_subscription_async)
+        except Exception:
+            pass
+
+    async def _copy_subscription_async(self) -> None:
+        copied = False
+        try:
+            if HAS_PYPERCLIP:
+                pyperclip.copy(SUBSCRIPTION_URL)
+                copied = True
+        except Exception:
+            copied = False
+
+        if not copied:
+            try:
+                await ft.Clipboard().set(SUBSCRIPTION_URL)
+                copied = True
+            except Exception:
+                copied = False
+
+        if copied:
+            self._show_snack("Ссылка на подписку скопирована!")
+        else:
+            self._show_snack("Не удалось скопировать ссылку")
+
+    def _on_copy_logs_click(self, e) -> None:
+        try:
+            self.page.run_task(self._copy_logs_async)
+        except Exception:
+            pass
+
+    async def _copy_logs_async(self) -> None:
+        text = "\n".join([m for (m, _t) in list(self._log_buffer)])
+        try:
+            await ft.Clipboard().set(text)
+            self._show_snack("Logs copied to clipboard")
+        except Exception:
+            pass
+
+    def _apply_forsage_style(self, enabled: bool) -> None:
+        color = "#FF0000" if enabled else "#22D3EE"
+        border = "#FF0000" if enabled else "#1F2937"
+        self.cps_text.color = color
+        self.cps_ring.color = color
+        self.speedometer_card.border = ft.Border.all(2 if enabled else 1, border)
+
+    def _clear_views(self) -> None:
+        self.logs_view.controls.clear()
+        self.results_view.controls.clear()
+        self._log_buffer.clear()
+        self._result_buffer.clear()
+        self._best_results_by_link.clear()
+        self._stats_snapshot = _UiStatsSnapshot()
+        self.progress_bar.value = 0.0
+        self.progress_text.value = "0/0"
+        self.cps_text.value = "0.0"
+        self.cps_ring.value = 0.0
+        self.active_workers_text.value = "0"
+        self.avg_latency_text.value = "0 ms"
+        self.current_task_text.value = ""
+
+    async def _ui_flush_loop(self) -> None:
+        min_interval = 0.4
+        last = 0.0
+        while True:
+            if not self.controller.is_running and self.stop_btn.disabled:
+                return
+
+            await self._dirty.wait()
+            now = time.monotonic()
+            dt = now - last
+            if dt < min_interval:
+                await asyncio.sleep(min_interval - dt)
+            last = time.monotonic()
+            self._dirty.clear()
+
+            self._flush_logs(max_items=120)
+            self._flush_results(max_items=40)
+            self._flush_stats()
+
+            self.page.update()
+
+    def _flush_logs(self, *, max_items: int) -> None:
+        if not self._log_buffer:
+            return
+
+        color_map = {
+            "error": "#F87171",
+            "warning": "#FBBF24",
+            "success": "#34D399",
+            "debug": "#94A3B8",
+            "info": "#E2E8F0",
+        }
+        n = 0
+        while self._log_buffer and n < max_items:
+            msg, tag = self._log_buffer.popleft()
+            self.logs_view.controls.append(
+                ft.Text(msg, size=11, color=color_map.get(tag, "#E2E8F0"), font_family="Consolas")
+            )
+            n += 1
+
+        if len(self.logs_view.controls) > 1200:
+            self.logs_view.controls = self.logs_view.controls[-900:]
+
+    def _flush_results(self, *, max_items: int) -> None:
+        def to_float(v, default: float) -> float:
+            try:
+                if v is None:
+                    return default
+                return float(v)
+            except Exception:
+                return default
+
+        def quality_key(r: dict):
+            ac = 0
+            try:
+                ac = int(r.get("accessible_count") or 0)
+            except Exception:
+                ac = 0
+            success_rank = 0 if ac > 0 else 1
+            hi_rank = 0 if bool(r.get("is_high_reliability")) else 1
+            latency = to_float(r.get("avg_resource_rtt"), 999999.0)
+            return (success_rank, hi_rank, latency)
+
+        ingested = 0
+        while self._result_buffer and ingested < max_items:
+            try:
+                r = self._result_buffer.popleft()
+            except Exception:
+                break
+
+            link = r.get("link")
+            if link:
+                self._best_results_by_link[str(link)] = r
+            ingested += 1
+
+        if not self._best_results_by_link:
+            return
+
+        try:
+            ordered = sorted(self._best_results_by_link.values(), key=quality_key)
+        except Exception:
+            ordered = list(self._best_results_by_link.values())
+
+        if len(ordered) > int(self._best_results_keep):
+            ordered = ordered[: int(self._best_results_keep)]
+            try:
+                self._best_results_by_link = {str(r.get("link")): r for r in ordered if r.get("link")}
+            except Exception:
+                pass
+
+        top_n = int(self._best_results_topn)
+        view_items = ordered[:top_n]
+
+        controls: List[ft.Control] = []
+        for idx, r in enumerate(view_items, start=1):
+            name = r.get("name", "Unknown")
+            acc = r.get("accessibility", "")
+            avg = r.get("avg_resource_rtt", 0)
+            hi = bool(r.get("is_high_reliability"))
+            color = "#34D399" if hi else "#60A5FA"
+
+            title_controls: List[ft.Control] = []
+            if idx == 1:
+                title_controls.append(ft.Icon(ft.Icons.EMOJI_EVENTS, size=18, color="#FBBF24"))
+            title_controls.append(
+                ft.Text(
+                    f"{idx}. {name}",
+                    size=13,
+                    weight=ft.FontWeight.W_900 if idx == 1 else ft.FontWeight.BOLD,
+                    color="#E2E8F0",
+                )
+            )
+
+            controls.append(
+                ft.Container(
+                    padding=12,
+                    border_radius=14,
+                    bgcolor="#111827" if idx != 1 else "#0B1220",
+                    border=ft.Border.all(1, "#1F2937"),
+                    content=ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Row(title_controls, spacing=6),
+                                    ft.Text(f"Success | {acc} | Avg: {avg}ms", size=11, color="#94A3B8"),
+                                ],
+                            ),
+                            ft.Container(
+                                padding=8,
+                                border_radius=12,
+                                bgcolor="#0F172A",
+                                content=ft.Text(
+                                    "HIGH" if hi else "OK",
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=color,
+                                ),
+                            ),
+                        ],
+                    ),
+                )
+            )
+
+        self.results_view.controls = controls
+
+    def _flush_stats(self) -> None:
+        snap = self._stats_snapshot
+        self.cps_text.value = f"{snap.cps:.1f}"
+        self.active_workers_text.value = str(int(snap.active_workers))
+        self.avg_latency_text.value = f"{int(snap.avg_latency_ms)} ms"
+        self.current_task_text.value = snap.current_task
+
+        if snap.total > 0:
+            self.progress_text.value = f"{snap.completed}/{snap.total}"
+            self.progress_bar.value = min(1.0, max(0.0, snap.completed / max(1, snap.total)))
+
+        # Simple visualization scale: 0..50 CPS == full ring (dynamic would be noisier)
+        ring_scale = 50.0
+        self.cps_ring.value = min(1.0, max(0.0, float(snap.cps) / ring_scale))
+
+
+async def main(page: ft.Page) -> None:
+    NPVTFletApp(page)
+
+
+if __name__ == "__main__":
+    print(
+        """
 ╔══════════════════════════════════════════════════════════════╗
-║     NetPrivacy Verification Tool - GUI Edition               ║
-║     Powered by CustomTkinter                                 ║
+║     NetPrivacy Verification Tool - Flet Dashboard Edition    ║
+║     Powered by Flet (Flutter)                                ║
 ║     Made by @TheFirSStYfOreVer                               ║
 ║                                                              ║
 ║     Supported protocols: VLESS, VMESS, Trojan, Shadowsocks   ║
 ╚══════════════════════════════════════════════════════════════╝
-    """)
-    
-    app.mainloop()
-
-
-if __name__ == "__main__":
-    main()
+    """
+    )
+    ft.run(main)
+    sys.exit(0)

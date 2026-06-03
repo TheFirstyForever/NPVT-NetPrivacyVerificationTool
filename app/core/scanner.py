@@ -1,17 +1,21 @@
 # Made by @TheFirSStYfOreVer
 import asyncio
 import base64
+import ctypes
 import json
 import os
 import platform
 import random
+import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
+from ctypes import wintypes
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, unquote, urlparse
 
@@ -21,29 +25,233 @@ import aiohttp_socks
 
 class LogicVerifier:
     def __init__(self, tui=None, log_callback: Optional[Callable[[str], None]] = None):
-        self.bin_path = os.path.join(os.getcwd(), "app", "bin", "xray.exe")
-        self.test_target = "http://cp.cloudflare.com/generate_204"
-        self.process_timeout = 15
         self.tui = tui  # Legacy: ссылка на TUI/GUI для логирования и обновлений
         self._log_callback = log_callback  # Новый callback для логов
+
+        def _emit(msg: str) -> None:
+            try:
+                if self._log_callback:
+                    self._log_callback(msg)
+            except Exception:
+                pass
+
+        roots = []
+        try:
+            roots.append(os.getcwd())
+        except Exception:
+            pass
+        try:
+            roots.append(os.path.dirname(sys.executable))
+        except Exception:
+            pass
+        try:
+            base = getattr(sys, "_MEIPASS", None)
+            if base and os.path.isdir(base):
+                roots.append(os.path.abspath(base))
+        except Exception:
+            pass
+        try:
+            roots.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))
+        except Exception:
+            pass
+        try:
+            roots.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
+        except Exception:
+            pass
+
+        seen = set()
+        roots = [r for r in roots if r and (not (r in seen or seen.add(r)))]
+
+        candidates = []
+        for r in roots:
+            candidates.append(os.path.join(r, "core", "bin", "npvt_core.exe"))
+            candidates.append(os.path.join(r, "app", "bin", "npvt_core.exe"))
+            candidates.append(os.path.join(r, "core", "bin", "xray.exe"))
+            candidates.append(os.path.join(r, "app", "bin", "xray.exe"))
+
+        self.bin_path = ""
+        for p in candidates:
+            try:
+                if os.path.isfile(p) and p.lower().endswith("npvt_core.exe"):
+                    self.bin_path = p
+                    break
+            except Exception:
+                continue
+
+        if not self.bin_path:
+            for p in candidates:
+                try:
+                    if os.path.isfile(p) and p.lower().endswith("xray.exe"):
+                        self.bin_path = p
+                        break
+                except Exception:
+                    continue
+
+        if not self.bin_path:
+            _emit("[ERROR] Engine binary not found (npvt_core.exe/xray.exe). Check installation folder.")
+        self.process_timeout = 15
         self._current_config = None  # Текущий конфиг для отображения
         self._active_processes: list = []  # Список активных процессов для принудительной остановки
+        self.deep_checks = True
+
+        self._engine_path = self.bin_path
+        self._job_handle = None
+        if sys.platform == "win32":
+            try:
+                class IO_COUNTERS(ctypes.Structure):
+                    _fields_ = [
+                        ("ReadOperationCount", ctypes.c_uint64),
+                        ("WriteOperationCount", ctypes.c_uint64),
+                        ("OtherOperationCount", ctypes.c_uint64),
+                        ("ReadTransferCount", ctypes.c_uint64),
+                        ("WriteTransferCount", ctypes.c_uint64),
+                        ("OtherTransferCount", ctypes.c_uint64),
+                    ]
+
+                class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                    _fields_ = [
+                        ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                        ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD),
+                    ]
+
+                class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                    _fields_ = [
+                        ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                        ("IoInfo", IO_COUNTERS),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t),
+                    ]
+
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                hjob = kernel32.CreateJobObjectW(None, None)
+                if hjob:
+                    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+                    info.BasicLimitInformation.LimitFlags = 0x00002000
+                    ok = kernel32.SetInformationJobObject(
+                        hjob,
+                        9,
+                        ctypes.byref(info),
+                        ctypes.sizeof(info),
+                    )
+                    if ok:
+                        self._job_handle = hjob
+            except Exception:
+                self._job_handle = None
+        self._cfg_dir = os.path.join(tempfile.gettempdir(), "npvt_configs")
+        try:
+            os.makedirs(self._cfg_dir, exist_ok=True)
+        except Exception:
+            pass
+
+        self._port_lock = threading.Lock()
+        self._ports_in_use = set()
+        self._port_min = 20000
+        self._port_max = 65000
+        self._port_cursor = random.randint(self._port_min, self._port_max)
 
     def get_free_port(self):
-        """Find a free port in 20000-60000 to avoid conflicts with VPN clients."""
-        for _ in range(200):
-            port = random.randint(20000, 60000)
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
-                    s.bind(("127.0.0.1", port))
-                    return port
-            except OSError:
-                continue
-        # Fallback: let OS assign any free port
+        rng = (self._port_max - self._port_min) + 1
+        with self._port_lock:
+            for _ in range(rng):
+                port = self._port_cursor
+                self._port_cursor += 1
+                if self._port_cursor > self._port_max:
+                    self._port_cursor = self._port_min
+                if port in self._ports_in_use:
+                    continue
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+                        s.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+                self._ports_in_use.add(port)
+                return port
+
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
-            return s.getsockname()[1]
+            port = s.getsockname()[1]
+        with self._port_lock:
+            self._ports_in_use.add(port)
+        return port
+
+    def _release_port(self, port: int) -> None:
+        try:
+            if not port:
+                return
+            with self._port_lock:
+                self._ports_in_use.discard(int(port))
+        except Exception:
+            pass
+
+    def _assign_pid_to_job(self, pid: int) -> None:
+        if sys.platform != "win32" or not self._job_handle or not pid:
+            return
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            PROCESS_TERMINATE = 0x0001
+            PROCESS_SET_QUOTA = 0x0100
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            hproc = kernel32.OpenProcess(
+                PROCESS_TERMINATE | PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION,
+                False,
+                int(pid),
+            )
+            if not hproc:
+                return
+            try:
+                kernel32.AssignProcessToJobObject(self._job_handle, hproc)
+            finally:
+                kernel32.CloseHandle(hproc)
+        except Exception:
+            return
+
+    def _taskkill_tree(self, pid: int) -> bool:
+        if sys.platform != "win32" or not pid:
+            return False
+        try:
+            cf = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=cf,
+                timeout=2,
+            )
+            return True
+        except Exception:
+            return False
+
+    async def _wait_local_tcp_open(self, port: int, timeout_s: float = 1.2) -> bool:
+        if not port:
+            return False
+
+        deadline = time.monotonic() + float(timeout_s)
+        while time.monotonic() < deadline:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", int(port)),
+                    timeout=0.25,
+                )
+                try:
+                    writer.close()
+                    if hasattr(writer, "wait_closed"):
+                        await writer.wait_closed()
+                except Exception:
+                    pass
+                return True
+            except Exception:
+                await asyncio.sleep(0.05)
+        return False
 
     def _decode_vmess(self, raw_data):
         """Decode VMess base64 with proper padding calculation."""
@@ -58,6 +266,10 @@ class LogicVerifier:
             return int(value) if value is not None else default
         except (ValueError, TypeError):
             return default
+
+    def _write_config_file(self, config_path: str, config: dict) -> None:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
 
     async def _log(self, message: str):
         """Логирование через callback, TUI или stdout."""
@@ -346,24 +558,6 @@ class LogicVerifier:
         except Exception as e:
             return None, f"Parse error: {str(e)}"
 
-    async def _async_head_check(self, port):
-        """Fully async connection check using aiohttp with SOCKS proxy."""
-        connector = aiohttp_socks.ProxyConnector.from_url(
-            f"socks5://127.0.0.1:{port}"
-        )
-        timeout = aiohttp.ClientTimeout(total=10)
-
-        try:
-            async with aiohttp.ClientSession(
-                connector=connector, timeout=timeout
-            ) as session:
-                async with session.head(self.test_target, allow_redirects=False) as resp:
-                    return resp.status in [200, 204]
-        except Exception:
-            return False
-        finally:
-            connector.close()
-
     async def _check_single_resource(self, domain: str, port: int, session) -> tuple:
         """
         Проверяет доступность одного endpoint через SOCKS5 прокси.
@@ -380,22 +574,17 @@ class LogicVerifier:
         start_time = time.time()
         
         try:
+            req_timeout = aiohttp.ClientTimeout(total=6)
             # HEAD запрос без следования редиректам (быстрее)
-            async with session.head(url, allow_redirects=False, ssl=False) as resp:
+            async with session.head(url, allow_redirects=False, ssl=False, timeout=req_timeout) as resp:
                 elapsed = (time.time() - start_time) * 1000
                 
                 # Считаем успешными 200, 301, 302, 403 (доступ есть, даже если блок)
-                success = resp.status in [200, 204, 301, 302, 307, 308, 403, 404]
-                
-                if success:
-                    await self._log(f"[DEBUG] Testing {domain} via SOCKS5:{port}... Success ({elapsed:.0f}ms)")
-                else:
-                    await self._log(f"[DEBUG] Testing {domain} via SOCKS5:{port}... HTTP {resp.status}")
+                success = resp.status in [200, 204, 301, 302, 307, 308, 403, 404, 405]
                 
                 return domain, success, elapsed if success else 0
                 
         except Exception as e:
-            await self._log(f"[DEBUG] Testing {domain} via SOCKS5:{port}... Failed ({str(e)[:30]})")
             return domain, False, 0
 
     async def _check_resources_with_session(self, port: int, session: aiohttp.ClientSession) -> dict:
@@ -488,94 +677,6 @@ class LogicVerifier:
         finally:
             connector.close()
 
-    async def check_gemini_availability(self, port: int, session: Optional[aiohttp.ClientSession] = None) -> bool:
-        req_timeout = aiohttp.ClientTimeout(total=5)
-
-        allowed_suffixes = (
-            "google.com",
-            "googleapis.com",
-            "google.dev",
-            "gstatic.com",
-            "googleusercontent.com",
-        )
-
-        urls = [
-            "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta",
-            "https://generativelanguage.googleapis.com/v1beta/models",
-            "https://gemini.google.com/",
-        ]
-
-        async def run_probe(sess: aiohttp.ClientSession) -> bool:
-            for url in urls:
-                try:
-                    async with sess.get(url, allow_redirects=False, ssl=False, timeout=req_timeout) as resp:
-                        if 300 <= resp.status < 400:
-                            location = resp.headers.get("Location") or ""
-                            location_low = location.lower()
-                            host = urlparse(location).netloc.lower()
-                            if host and not host.endswith(allowed_suffixes):
-                                return False
-                            if "captcha" in location_low or "recaptcha" in location_low or "/sorry/" in location_low:
-                                return False
-                            continue
-
-                        if resp.status not in (200, 403):
-                            continue
-
-                        raw = await resp.content.read(4096)
-                        text = raw.decode(errors="ignore")
-                        low = text.lower()
-
-                        if "failed_precondition" in low:
-                            continue
-
-                        if resp.status == 403:
-                            if not (
-                                "api key" in low
-                                or "api_key" in low
-                                or "permission_denied" in low
-                                or "unauthenticated" in low
-                            ):
-                                continue
-
-                        if resp.status == 200 and "$discovery/rest" in url:
-                            if "discovery#restdescription" not in low and "gemini api" not in low:
-                                continue
-
-                        if (
-                            "captcha" in low
-                            or "recaptcha" in low
-                            or "unusual traffic" in low
-                            or "/sorry/" in low
-                            or "provider" in low
-                            or "blocked" in low
-                        ):
-                            continue
-
-                        return True
-                except Exception:
-                    continue
-            return False
-
-        if session is not None:
-            try:
-                return await run_probe(session)
-            except Exception:
-                return False
-
-        connector = aiohttp_socks.ProxyConnector.from_url(
-            f"socks5://127.0.0.1:{port}"
-        )
-        timeout = aiohttp.ClientTimeout(total=5)
-
-        try:
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as owned_session:
-                return await run_probe(owned_session)
-        except Exception:
-            return False
-        finally:
-            connector.close()
-
     async def _kill_process_failsafe(self, proc, port: int = 0, timeout=5):
         """Foolproof process termination - guarantees process death."""
         if proc is None or proc.returncode is not None:
@@ -585,13 +686,21 @@ class LogicVerifier:
         try:
             # Stage 1: Graceful termination
             if sys.platform == "win32":
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
+                try:
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                except OSError as e:
+                    if getattr(e, "winerror", None) not in (6,):
+                        await self._log(f"[KILL] Ошибка при сигнале PID {pid}: {e}")
             else:
-                proc.terminate()
+                try:
+                    proc.terminate()
+                except OSError as e:
+                    if getattr(e, "winerror", None) not in (6,):
+                        await self._log(f"[KILL] Ошибка при terminate PID {pid}: {e}")
 
             # Wait with timeout
             try:
-                await asyncio.wait_for(proc.wait(), timeout=0.5)
+                await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=0.5)
                 await self._log(f"[KILL] PID {pid} завершен gracefully")
                 return
             except asyncio.TimeoutError:
@@ -599,18 +708,88 @@ class LogicVerifier:
                 pass
 
             # Stage 2: Force kill
-            proc.kill()
             try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
+                proc.kill()
+            except ProcessLookupError:
+                return
+            except OSError as e:
+                if getattr(e, "winerror", None) in (6,):
+                    return
+                raise
+            try:
+                await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=1.0)
                 await self._log(f"[KILL] PID {pid} убит forcefully")
             except asyncio.TimeoutError:
-                await self._log(f"[KILL] ⚠ PID {pid} не удается убить!")
+                ok = self._taskkill_tree(pid)
+                if ok:
+                    await self._log(f"[KILL] PID {pid} убит taskkill")
+                else:
+                    await self._log(f"[KILL] ⚠ PID {pid} не удается убить!")
                 pass
 
         except ProcessLookupError:
-            await self._log(f"[KILL] PID {pid} уже не существует")
+            return
+        except OSError as e:
+            if getattr(e, "winerror", None) in (6,):
+                return
+            await self._log(f"[KILL] Ошибка при убийстве PID {pid}: {e}")
         except Exception as e:
             await self._log(f"[KILL] Ошибка при убийстве PID {pid}: {e}")
+
+    def _cleanup_temp_artifacts(self, max_age_seconds: int = 24 * 60 * 60) -> None:
+        try:
+            now = time.time()
+            temp_dir = tempfile.gettempdir()
+
+            cfg_dir = os.path.join(temp_dir, "npvt_configs")
+            if os.path.isdir(cfg_dir):
+                for fn in os.listdir(cfg_dir):
+                    if not (fn.startswith("temp_") and fn.endswith(".json")):
+                        continue
+                    p = os.path.join(cfg_dir, fn)
+                    try:
+                        if now - os.path.getmtime(p) > max_age_seconds:
+                            os.remove(p)
+                    except Exception:
+                        pass
+
+            for fn in os.listdir(temp_dir):
+                if not (fn.startswith("npvt_run_") and fn.lower().endswith(".exe")):
+                    continue
+                p = os.path.join(temp_dir, fn)
+                try:
+                    if now - os.path.getmtime(p) > max_age_seconds:
+                        os.remove(p)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def cleanup_temp_now(self) -> None:
+        self._cleanup_temp_artifacts(max_age_seconds=0)
+
+    def kill_shadow_processes(self, prefix: str = "npvt_run_") -> int:
+        if sys.platform != "win32":
+            return 0
+
+        try:
+            ps = (
+                f"$p=Get-CimInstance Win32_Process | Where-Object {{$_.Name -like '{prefix}*.exe'}};"
+                "$ids=@($p | Select-Object -ExpandProperty ProcessId);"
+                "foreach($id in $ids){try{Stop-Process -Id $id -Force -ErrorAction SilentlyContinue}catch{}};"
+                "$ids.Count"
+            )
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", ps],
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,
+                timeout=2,
+            ).decode(errors="ignore").strip()
+            return int(out) if out else 0
+        except subprocess.TimeoutExpired:
+            return 0
+        except Exception:
+            return 0
 
     def kill_all_processes(self) -> int:
         """Принудительно убивает все активные процессы xray."""
@@ -620,8 +799,21 @@ class LogicVerifier:
             try:
                 if proc and proc.returncode is None:
                     pid = proc.pid
-                    proc.kill()
-                    killed += 1
+                    try:
+                        if sys.platform == "win32":
+                            if self._taskkill_tree(pid):
+                                killed += 1
+                            else:
+                                proc.kill()
+                                killed += 1
+                        else:
+                            proc.kill()
+                            killed += 1
+                    except ProcessLookupError:
+                        pass
+                    except OSError as e:
+                        if getattr(e, "winerror", None) not in (6,):
+                            pass
                     if self._log_callback:
                         try:
                             self._log_callback(f"[KILL ALL] Process {pid} killed")
@@ -641,15 +833,20 @@ class LogicVerifier:
             _creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
             if sys.platform == "win32":
                 _creationflags |= subprocess.CREATE_NO_WINDOW
-                _creationflags |= 0x00004000  # BELOW_NORMAL_PRIORITY_CLASS
+
+            engine_path = self._engine_path
             proc = await asyncio.create_subprocess_exec(
-                self.bin_path,
+                engine_path,
                 "-c",
                 config_path,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 creationflags=_creationflags,
             )
+            try:
+                self._assign_pid_to_job(proc.pid)
+            except Exception:
+                pass
             # Добавляем в список активных процессов
             self._active_processes.append(proc)
             await self._log(f"[XRAY] PID {proc.pid} запущен на порту {port}")
@@ -661,106 +858,158 @@ class LogicVerifier:
                     self._active_processes.remove(proc)
                 if proc.returncode is None:
                     await self._log(f"[XRAY] Завершение PID {proc.pid} (порт {port})")
-                await self._kill_process_failsafe(proc, port)
+                try:
+                    await asyncio.shield(self._kill_process_failsafe(proc, port))
+                except Exception:
+                    pass
+            self._release_port(port)
 
-    async def check_connection(self, link, semaphore):
+    async def check_connection(self, link, semaphore=None):
         """Test a single proxy connection with full async processing."""
+        if semaphore is None:
+            return await self._check_connection_inner(link)
         async with semaphore:
-            port = self.get_free_port()
-            config, node_name = self.build_config(link, port)
+            return await self._check_connection_inner(link)
 
+    async def _check_connection_inner(self, link):
+            try:
+                if self.tui is not None and getattr(self.tui, "_stop_requested", False):
+                    return None
+                if self.tui is not None and hasattr(self.tui, "is_running") and (not getattr(self.tui, "is_running")):
+                    return None
+            except Exception:
+                pass
             # Сокращаем ссылку для логирования (первые 60 символов)
             link_preview = link[:60] + "..." if len(link) > 60 else link
+            node_name = "Unknown Node"
+            last_error = None
 
-            if not config:
-                await self._log(f"[SKIP] {node_name} | {link_preview}")
-                return None
+            for attempt in range(2):
+                try:
+                    if self.tui is not None and getattr(self.tui, "_stop_requested", False):
+                        return None
+                    if self.tui is not None and hasattr(self.tui, "is_running") and (not getattr(self.tui, "is_running")):
+                        return None
+                except Exception:
+                    pass
 
-            # Обновляем текущий конфиг в TUI для отображения
-            if self.tui:
-                self.tui.set_current_config(config, node_name)
+                port = self.get_free_port()
+                config, node_name = self.build_config(link, port)
 
-            protocol = config["outbounds"][0].get("protocol", "")
-            if not protocol:
-                await self._log(f"[SKIP] Empty protocol | {link_preview}")
-                return None
+                if not config:
+                    self._release_port(port)
+                    await self._log(f"[SKIP] {node_name} | {link_preview}")
+                    return None
 
-            temp_dir = os.path.join(tempfile.gettempdir(), "npvt_configs")
-            os.makedirs(temp_dir, exist_ok=True)
-            config_path = os.path.join(temp_dir, f"temp_{port}.json")
-            try:
-                # Сохраняем временный конфиг
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(config, f, indent=2)
-                
-                await self._log(f"[XRAY] Запуск процесса на порту {port}")
+                await self._log(f"[CHECK] {node_name[:30]} | {link_preview}")
 
-                async with self._managed_xray_process(config_path, port) as proc:
-                    # Wait for Xray to initialize
-                    await asyncio.sleep(0.5)
+                if self.tui:
+                    self.tui.set_current_config(config, node_name)
 
-                    # Measure connection time
-                    start_time = time.time()
-                    success = await self._async_head_check(port)
-                    elapsed = (time.time() - start_time) * 1000
+                protocol = config["outbounds"][0].get("protocol", "")
+                if not protocol:
+                    self._release_port(port)
+                    await self._log(f"[SKIP] Empty protocol | {link_preview}")
+                    return None
 
-                    host, host_port = self._extract_host_port(config)
+                config_path = os.path.join(self._cfg_dir, f"temp_{port}.json")
+                try:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, self._write_config_file, config_path, config)
+                    except Exception:
+                        self._write_config_file(config_path, config)
 
-                    if success:
-                        await self._log(f"[ACTIVE] {node_name[:30]} | Базовая задержка: {elapsed:.0f}ms")
+                    await self._log(f"[XRAY] Запуск процесса на порту {port}")
 
-                        await self._log(f"[*] Начинаю проверку доступности endpoint для {node_name[:30]}...")
+                    try:
+                        if self.tui is not None and getattr(self.tui, "_stop_requested", False):
+                            return None
+                        if self.tui is not None and hasattr(self.tui, "is_running") and (not getattr(self.tui, "is_running")):
+                            return None
+                    except Exception:
+                        pass
+
+                    async with self._managed_xray_process(config_path, port):
+                        ready = await self._wait_local_tcp_open(port, timeout_s=1.2)
+                        if not ready:
+                            last_error = f"port {port} not listening"
+                            continue
 
                         connector = aiohttp_socks.ProxyConnector.from_url(
                             f"socks5://127.0.0.1:{port}"
                         )
                         timeout = aiohttp.ClientTimeout(total=15)
+                        base_ping_ms = 0.0
                         try:
                             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
                                 resource_task = asyncio.create_task(self.check_resources(port, session=session))
-                                gemini_task = asyncio.create_task(self.check_gemini_availability(port, session=session))
-                                resource_results, gemini_ready = await asyncio.gather(resource_task, gemini_task)
+                                resource_results = await resource_task
+
+                                ok_rtts = []
+                                try:
+                                    for _domain, (ok, rtt) in (resource_results.get("results") or {}).items():
+                                        if ok and rtt and rtt > 0:
+                                            ok_rtts.append(float(rtt))
+                                except Exception:
+                                    ok_rtts = []
+
+                                if ok_rtts:
+                                    base_ping_ms = min(ok_rtts)
+                                else:
+                                    base_ping_ms = 0.0
+
+                                if resource_results.get("accessible_count", 0) <= 0:
+                                    last_error = "resources 0/4"
+                                    continue
+
+                                host, host_port = self._extract_host_port(config)
+
+                                await self._log(f"[ACTIVE] {node_name[:30]} | Базовая задержка: {base_ping_ms:.0f}ms")
                         finally:
                             connector.close()
 
                         reliability_status = "[HIGH RELIABILITY]" if resource_results["is_high_reliability"] else f"✓ {resource_results['accessibility']}"
                         await self._log(f"[RESOURCES] {node_name[:30]} | {reliability_status} | Avg: {resource_results['avg_rtt']:.0f}ms")
-                        if gemini_ready:
-                            await self._log(f"[GEMINI] {node_name[:30]} | Gemini_Ready")
-                        else:
-                            await self._log(f"[GEMINI] {node_name[:30]} | NOT READY")
-                        
+
+                        try:
+                            await self._log(
+                                f"[RESULT] {node_name[:30]} | {base_ping_ms:.0f}ms | {resource_results['accessibility']} | Avg: {resource_results['avg_rtt']:.0f}ms"
+                            )
+                        except Exception:
+                            pass
+
                         return {
                             "link": link,
                             "name": node_name,
                             "type": protocol.upper(),
-                            "ping": round(elapsed, 1),
+                            "ping": round(base_ping_ms, 1),
                             "host": host,
                             "port": host_port,
-                            # Новые поля для ресурсов
                             "accessible_count": resource_results["accessible_count"],
                             "accessibility": resource_results["accessibility"],
                             "is_high_reliability": resource_results["is_high_reliability"],
                             "avg_resource_rtt": resource_results["avg_rtt"],
                             "total_resource_rtt": resource_results["total_rtt"],
                             "resource_results": resource_results["results"],
-                            "gemini_ready": gemini_ready,
-                            "tags": ["Gemini_Ready"] if gemini_ready else [],
+                            "tags": [],
                         }
-                    else:
-                        await self._log(f"[INACTIVE] {node_name[:30]} | timeout/failed")
-                        return None
-            except asyncio.CancelledError:
-                await self._log(f"[CANCELLED] {node_name[:30]} | проверка отменена")
-                raise  # Перебрасываем для обработки выше
-            except Exception as e:
-                await self._log(f"[ERROR] {node_name[:30]} | {str(e)[:50]}")
-                return None
-            finally:
-                # Cleanup temp config
-                try:
-                    if os.path.exists(config_path):
-                        os.remove(config_path)
-                        await self._log(f"[CLEANUP] Удален temp конфиг порта {port}")
+                except asyncio.CancelledError:
+                    await self._log(f"[CANCELLED] {node_name[:30]} | проверка отменена")
+                    raise
                 except Exception as e:
-                    await self._log(f"[CLEANUP ERROR] Порт {port}: {e}")
+                    last_error = str(e)
+                    await self._log(f"[ERROR] {node_name[:30]} | {str(e)[:50]}")
+                finally:
+                    try:
+                        if os.path.exists(config_path):
+                            os.remove(config_path)
+                    except Exception:
+                        pass
+                    self._release_port(port)
+
+            if last_error:
+                await self._log(f"[INACTIVE] {node_name[:30]} | {last_error}")
+            else:
+                await self._log(f"[INACTIVE] {node_name[:30]} | timeout/failed")
+            return None

@@ -63,35 +63,21 @@ def check_python():
 def install_dependencies():
     """Устанавливает необходимые библиотеки"""
     print_header("Installing Dependencies")
-    
-    deps = [
-        ("aiohttp", "3.8.0"),
-        ("aiohttp-socks", "0.7.0"),
-        ("pyperclip", "1.8.0"),
-        ("customtkinter", "5.0.0"),
-        ("Pillow", "9.0.0"),
-    ]
-    
-    failed = []
-    for dep, min_ver in deps:
-        print(f"Installing {dep}...")
-        try:
-            # Пробуем установить/обновить
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "-q", "--upgrade", dep],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            print_success(f"{dep} installed")
-        except Exception as e:
-            print_error(f"Failed to install {dep}: {e}")
-            failed.append(dep)
-    
-    if failed:
-        print_warning(f"\nSome packages failed: {', '.join(failed)}")
-        print("Try running: pip install " + " ".join(failed))
+
+    project_root = get_project_root()
+    req = project_root / "requirements.txt"
+    if not req.exists():
+        print_error("requirements.txt not found in project root")
         return False
-    
+
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-r", str(req)],
+        )
+    except Exception as e:
+        print_error(f"Dependency installation failed: {e}")
+        return False
+
     print_success("All dependencies installed!")
     return True
 
@@ -102,53 +88,25 @@ def get_project_root():
 def create_icon():
     """Создает иконку приложения"""
     print_header("Creating Application Icon")
-    
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except ImportError:
-        print("Installing Pillow for icon creation...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "Pillow"])
-        from PIL import Image, ImageDraw, ImageFont
-    
-    # Создаем изображение
-    size = 256
-    img = Image.new('RGBA', (size, size), (15, 15, 26, 255))
-    draw = ImageDraw.Draw(img)
-    
-    # Рисуем щит
-    center = size // 2
-    radius = size // 3
-    draw.ellipse(
-        [center - radius, center - radius, center + radius, center + radius],
-        fill=(59, 142, 208, 255),
-        outline=(255, 255, 255, 255),
-        width=5
-    )
-    
-    # Текст NP
-    try:
-        font = ImageFont.truetype("arial.ttf", size // 4)
-    except:
-        font = ImageFont.load_default()
-    
-    text = "NP"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    x = (size - text_width) // 2
-    y = (size - text_height) // 2
-    draw.text((x, y), text, fill=(255, 255, 255, 255), font=font)
-    
-    # Сохраняем в app/assets
+
     project_root = get_project_root()
-    assets_dir = project_root / "app" / "assets"
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    
-    ico_path = assets_dir / "icon.ico"
-    img.save(str(ico_path), format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (32, 32), (16, 16)])
-    print_success(f"Icon created: {ico_path}")
-    
-    return str(ico_path)
+    ico_path = project_root / "app" / "assets" / "icon.ico"
+    if ico_path.exists():
+        print_success(f"Icon found: {ico_path}")
+        return str(ico_path)
+
+    print_warning("icon.ico not found. Trying to generate it via tools/create_icon.py...")
+    try:
+        subprocess.check_call([sys.executable, str(project_root / "tools" / "create_icon.py")])
+    except Exception:
+        print_warning("Failed to generate icon automatically. Shortcut will be created without custom icon.")
+        return ""
+
+    if ico_path.exists():
+        print_success(f"Icon created: {ico_path}")
+        return str(ico_path)
+
+    return ""
 
 def create_shortcut(icon_path):
     """Создает ярлык на рабочем столе"""
@@ -195,18 +153,20 @@ def create_portable_package():
     # Папки и файлы для включения
     include_items = [
         # Root files
-        "requirements.txt", "start.bat",
+        "requirements.txt", "start.bat", "README.md",
         # App folder
-        "app/main.py", "app/core", "app/bin", "app/data", "app/result",
+        "app/main.py", "app/core", "app/bin", "app/data", "app/assets",
         # Tools folder  
         "tools/uninstall.bat",
         "tools/install.py", "tools/create_icon.py",
-        # Docs folder
-        "docs/README.md",
     ]
     
     print(f"Creating: {zip_path}")
     
+    skip_names = {
+        "links_cache.json",
+        "verified_nodes.txt",
+    }
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for item in include_items:
             item_path = project_root / item
@@ -214,6 +174,21 @@ def create_portable_package():
                 if item_path.is_dir():
                     for file_path in item_path.rglob("*"):
                         if file_path.is_file():
+                            try:
+                                if "__pycache__" in file_path.parts:
+                                    continue
+                                if "logs" in file_path.parts:
+                                    continue
+                                if "result" in file_path.parts:
+                                    continue
+                                if file_path.name in skip_names:
+                                    continue
+                                if file_path.name.startswith("temp_") and file_path.suffix.lower() == ".json":
+                                    continue
+                                if file_path.suffix.lower() == ".tmp":
+                                    continue
+                            except Exception:
+                                pass
                             arcname = str(file_path.relative_to(project_root))
                             zf.write(file_path, arcname)
                             print(f"  + {arcname}")
@@ -226,7 +201,7 @@ def create_portable_package():
     print(f"\n{YELLOW}To use on another PC:{RESET}")
     print(f"1. Extract {zip_name} to any folder")
     print(f"2. Run tools/install.py (installs dependencies)")
-    print(f"3. Run tools/start.bat or desktop shortcut")
+    print(f"3. Run start.bat or desktop shortcut")
     
     return str(zip_path)
 
@@ -265,10 +240,9 @@ def create_standalone_exe():
             "--onefile", "--windowed",
             "--name", "NetPrivacyTool",
             "--icon", str(project_root / "app" / "assets" / "icon.ico"),
-            "--add-data", f"{project_root / 'app' / 'assets'};assets",
-            "--add-data", f"{project_root / 'app' / 'core'};core",
-            "--add-data", f"{project_root / 'app' / 'bin'};bin",
-            "--add-data", f"{project_root / 'app' / 'data'};data",
+            "--add-data", f"{project_root / 'app' / 'assets'};app/assets",
+            "--add-data", f"{project_root / 'app' / 'data'};app/data",
+            "--add-data", f"{project_root / 'app' / 'bin'};core/bin",
             str(project_root / "app" / "main.py")
         ], stdout=subprocess.DEVNULL, cwd=str(project_root))
         exe_path = project_root / "dist" / "NetPrivacyTool.exe"

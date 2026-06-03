@@ -38,8 +38,9 @@ def create_icon():
     y = (size - text_height) // 2
     draw.text((x, y), text, fill=(255, 255, 255, 255), font=font)
     
-    # Создаем папку assets
-    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+    # Создаем папку app/assets (проектная иконка)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    assets_dir = os.path.join(project_root, "app", "assets")
     os.makedirs(assets_dir, exist_ok=True)
     
     # Сохраняем в разных размерах для ICO
