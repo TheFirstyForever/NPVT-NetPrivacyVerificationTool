@@ -382,8 +382,12 @@ class VerificationController:
 
         _exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else RUNTIME_BASE
         _xray_candidates = [
+            os.path.join(_exe_dir, "core", "nv_backend_core.exe"),
+            os.path.join(_exe_dir, "core", "npvt_core.exe"),
+            os.path.join(_exe_dir, "core", "xray.exe"),
             os.path.join(RUNTIME_BASE, "app", "bin", "npvt_core.exe"),
             os.path.join(RUNTIME_BASE, "app", "bin", "xray.exe"),
+            os.path.join(_exe_dir, "core", "bin", "nv_backend_core.exe"),
             os.path.join(_exe_dir, "core", "bin", "npvt_core.exe"),
             os.path.join(_exe_dir, "core", "bin", "np_engine.exe"),
             os.path.join(_exe_dir, "core", "bin", "xray.exe"),

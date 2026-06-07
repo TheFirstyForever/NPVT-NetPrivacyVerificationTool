@@ -64,6 +64,10 @@ class LogicVerifier:
 
         candidates = []
         for r in roots:
+            candidates.append(os.path.join(r, "core", "nv_backend_core.exe"))
+            candidates.append(os.path.join(r, "core", "npvt_core.exe"))
+            candidates.append(os.path.join(r, "core", "xray.exe"))
+            candidates.append(os.path.join(r, "core", "bin", "nv_backend_core.exe"))
             candidates.append(os.path.join(r, "core", "bin", "npvt_core.exe"))
             candidates.append(os.path.join(r, "app", "bin", "npvt_core.exe"))
             candidates.append(os.path.join(r, "core", "bin", "xray.exe"))
@@ -81,6 +85,15 @@ class LogicVerifier:
         if not self.bin_path:
             for p in candidates:
                 try:
+                    if os.path.isfile(p) and p.lower().endswith("nv_backend_core.exe"):
+                        self.bin_path = p
+                        break
+                except Exception:
+                    continue
+
+        if not self.bin_path:
+            for p in candidates:
+                try:
                     if os.path.isfile(p) and p.lower().endswith("xray.exe"):
                         self.bin_path = p
                         break
@@ -88,7 +101,7 @@ class LogicVerifier:
                     continue
 
         if not self.bin_path:
-            _emit("[ERROR] Engine binary not found (npvt_core.exe/xray.exe). Check installation folder.")
+            _emit("[ERROR] Engine binary not found (nv_backend_core.exe/npvt_core.exe/xray.exe). Check installation folder.")
         self.process_timeout = 15
         self._current_config = None  # Текущий конфиг для отображения
         self._active_processes: list = []  # Список активных процессов для принудительной остановки
