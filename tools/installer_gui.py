@@ -3,7 +3,6 @@ NetPrivacy Verification Tool — Legacy GUI Installer (DEPRECATED)
 
 This project has migrated to a Flet-based application and an Inno Setup installer.
 Use:
-- build_all.bat (release pipeline)
 - NetPrivacyTool_Setup.exe (Inno Setup)
 
 This file is kept only for historical reference and now exits immediately.
@@ -12,7 +11,7 @@ Made by @TheFirSStYfOreVer
 
 import sys
 
-print("[DEPRECATED] installer_gui.py is no longer supported. Use the Inno Setup installer or build_all.bat.")
+print("[DEPRECATED] installer_gui.py is no longer supported. Use the Inno Setup installer.")
 raise SystemExit(1)
 
 import json

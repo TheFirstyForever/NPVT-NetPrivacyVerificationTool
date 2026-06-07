@@ -90,24 +90,6 @@ https://example.com/sub_or_list.txt
 
 ---
 
-## Сборка (для разработчиков)
-
-### Полный релиз‑пайплайн
-
-`build_all.bat` собирает:
-
-- Portable папку + `release/NPVT_Portable.zip`
-- Inno Setup installer: `release/NetPrivacyTool_Setup.exe`
-- Clean Source ZIP: `release/NPVT_Source.zip`
-
-Требования:
-
-- Python
-- `pip install pyinstaller`
-- Inno Setup 6 (`ISCC.exe`)
-
----
-
 # EN
 
 ## What is NPVT
