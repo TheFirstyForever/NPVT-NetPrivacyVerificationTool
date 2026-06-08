@@ -6,7 +6,9 @@
 ![Engine](https://img.shields.io/badge/Engine-Xray--core-111827)
 ![License](https://img.shields.io/badge/License-GPL--3.0--or--later-green)
 
-<img src="docs/screenshots/IMG_20260609_035711.jpg" width="200" alt="Donate QR">
+<div style="display: inline-block; padding: 10px; border: 1px solid #ddd; border-radius: 10px; background-color: #f9f9f9;">
+  <img src="docs/screenshots/IMG_20260609_035711.jpg" width="100" alt="Donate">
+</div>
 <p align="center">
   <a href="https://www.tinkoff.ru/rm/r_hKMvqOMPWz.VIdWxEmgid/UW8Sr60397">
     <img src="https://img.shields.io/badge/Donate-Support_the_Project-ff69b4.svg?style=for-the-badge&logo=kofi&logoColor=white" alt="Donate">
