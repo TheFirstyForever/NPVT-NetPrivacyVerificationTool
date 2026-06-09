@@ -6,14 +6,29 @@
 ![Engine](https://img.shields.io/badge/Engine-Xray--core-111827)
 ![License](https://img.shields.io/badge/License-GPL--3.0--or--later-green)
 
-<div style="display: inline-block; padding: 10px; border: 1px solid #ddd; border-radius: 10px; background-color: #f9f9f9;">
-  <img src="docs/screenshots/IMG_20260609_035711.jpg" width="100" alt="Donate">
-</div>
 <p align="center">
   <a href="https://www.tinkoff.ru/rm/r_hKMvqOMPWz.VIdWxEmgid/UW8Sr60397">
     <img src="https://img.shields.io/badge/Donate-Support_the_Project-ff69b4.svg?style=for-the-badge&logo=kofi&logoColor=white" alt="Donate">
   </a>
 </p>
+
+<details>
+<summary><b>☕ Поддержать развитие проекта</b></summary>
+
+<br>
+
+<div align="center">
+  <img src="docs/screenshots/IMG_20260609_035711.jpg" width="200" alt="Donate QR" style="border-radius: 12px;">
+
+  <p><b>Поддержать разработку</b><br>
+  Проект NetPrivacyTool был создан с идеей сделать инструменты для обеспечения приватности простыми и доступными для каждого. Я развиваю его в свободное время, потому что верю, что свобода и безопасность в сети должны быть базовыми вещами.</p>
+
+  <p>Если этот инструмент оказался вам полезен и вы хотите сказать «спасибо», вы можете поддержать проект символическим донатом. Это лучший способ дать мне понять, что моя работа действительно делает вашу жизнь чуточку проще и безопаснее.</p>
+
+  <p><i>Спасибо, что вы со мной!</i></p>
+</div>
+
+</details>
 
 
 Research utility for **high‑volume streaming verification** of encrypted proxy nodes.
