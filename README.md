@@ -62,13 +62,13 @@ NPVT — это инструмент для **быстрой и корректн
 
 Проверка выполняется локально через Xray‑core (SOCKS5), а сетевые проверки — через `aiohttp`.
 
-## Скачать (Release артефакты)
+## Скачать (Release)
 
 В релизах репозитория имеется
 3 варианта:
 
 - **Installer**: `NetPrivacyTool_Setup.exe`
-- **Portable**: `NPVT_Portable.zip`
+- **Portable**: `Portable.zip`
 - **Source code**: `Source code.zip`
 
 ## Установка и запуск
@@ -81,7 +81,7 @@ NPVT — это инструмент для **быстрой и корректн
 
 ### Вариант B — Portable ZIP
 
-1) Скачай `NPVT_Portable.zip`
+1) Скачай `Portable.zip`
 2) Распакуй
 3) Запусти `NetPrivacyTool.exe`
 
@@ -128,11 +128,11 @@ It combines:
 - Xray‑core based local SOCKS5 execution
 - a modern Flet UI with a real‑time CPS speedometer
 
-## Downloads (Release artifacts)
+## Downloads (Release)
 
 - **Installer**: `NetPrivacyTool_Setup.exe`
-- **Portable**: `NPVT_Portable.zip`
-- **Clean Source**: `NPVT_Source.zip`
+- **Portable**: `Portable.zip`
+- **Clean Source**: `Source code.zip`
 
 ## Run from source
 
