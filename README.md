@@ -153,3 +153,13 @@ start.bat
 This program is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License as published by the Free Software Foundation, version 3.0.**
 
 Подробности в файле [LICENSE](./LICENSE).
+---
+
+<details>
+<summary><b>Использованные технологии и источники данных</b></summary>
+
+* <b>Ядро:</b> Проект реализован на базе [Xray-core](https://github.com/XTLS/Xray-core). Огромная благодарность команде [XTLS](https://github.com/XTLS) за разработку мощного ядра для сетевых протоколов.
+
+* <b>Данные:</b> Проект использует автоматический парсинг публичных источников, а также использует технологии и публичные листы которые были составлены **Goida vpn**  [goida-vpn-configs](https://github.com/AvenCores/goida-vpn-configs).
+
+</details>
