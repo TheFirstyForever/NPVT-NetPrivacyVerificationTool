@@ -1,7 +1,7 @@
 # NPVT — NetPrivacy Verification Tool
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6)
-![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
 ![UI](https://img.shields.io/badge/UI-Flet-4B8BBE)
 ![Engine](https://img.shields.io/badge/Engine-Xray--core-111827)
 ![License](https://img.shields.io/badge/License-GPL--3.0--or--later-green)
@@ -68,8 +68,8 @@ NPVT — это инструмент для **быстрой и корректн
 3 варианта:
 
 - **Installer**: `NetPrivacyTool_Setup.exe`
-- **Portable**: `Portable.zip`
-- **Source code**: `Source code.zip`
+- **Portable**: `NPVT_Portable.zip`
+- **Source code**: `NPVT_Source.zip`
 
 ## Установка и запуск
 
@@ -87,7 +87,7 @@ NPVT — это инструмент для **быстрой и корректн
 
 ### Вариант C — Запуск из исходников (Python)
 
-1) Установи Python 3.8+
+1) Установи Python 3.10+
 2) В корне проекта:
 
 ```bat
@@ -102,9 +102,136 @@ start.bat
 - **Производительность**: воркеры масштабируются под целевой CPS; метрика CPS сглаживается по окну
 - **Без лагов**: UI сортирует и рендерит только Top‑N (15–20), не тысячи строк
 
+## Как это работает (подробно)
+
+### 1) Где лежат данные при запуске (Runtime vs User)
+
+В коде есть два «базовых» пути:
+
+- `RUNTIME_BASE`
+  - в PyInstaller (frozen) — это папка рядом с `NetPrivacyTool.exe` (или `_MEIPASS`, если доступен)
+  - в dev-режиме — корень проекта (на уровень выше `app/main.py`)
+- `USER_BASE`
+  - Windows: `%LOCALAPPDATA%\NetPrivacyTool`
+
+Из этого следует правило:
+
+- `sources.txt` хранится рядом с программой (runtime)
+- кэш и результаты хранятся в профиле пользователя (user)
+
+### 2) Источники (`sources.txt`) и режимы Source mode
+
+NPVT читает список источников из `sources.txt`:
+
+- запуск из исходников: `app/data/sources.txt`
+- portable/installer: `data/sources.txt` (рядом с `NetPrivacyTool.exe`)
+
+В UI есть выпадающий список **Source mode**:
+
+- **Auto** — онлайн, а при проблемах сети использует кэш
+- **Online** — только онлайн-источники (HTTP/HTTPS)
+- **Cache** — офлайн режим: используется только кэш ссылок
+- **Parse** — парсинг через `app/core/goida_parser.py` (resilient fetch + фильтрация insecure)
+
+Форматы строк в `sources.txt`:
+
+- прямые конфиги: `vless://...`, `vmess://...`, `trojan://...`, `ss://...`
+- URL источников: `https://...` (страницы/подписки)
+
+### 3) Streaming пайплайн и динамические воркеры
+
+1) Из источников извлекаются прокси-ссылки и дедуплицируются
+2) Все ссылки кладутся в `asyncio.Queue`
+3) Запускается динамический пул воркеров
+
+Правило по воркерам:
+
+- обычный режим: примерно `TargetCPS * 3` (с верхним лимитом)
+- **ФОРСАЖ (MAX)**: воркеров существенно больше (агрессивный максимум)
+
+### 4) Как проверяется одна нода (Xray-core -> SOCKS5 -> 4 проверки)
+
+За проверку отвечает `LogicVerifier` (`app/core/scanner.py`). Для каждой ссылки:
+
+1) Выбирается свободный локальный порт
+2) Генерируется временный JSON-конфиг Xray в `%TEMP%\npvt_configs\temp_<port>.json`
+3) Запускается локальный SOCKS5 на `127.0.0.1:<port>`
+4) Через этот SOCKS5 выполняются параллельные HEAD-запросы к:
+
+- `youtube.com`
+- `t.me`
+- `discord.com`
+- `instagram.com`
+
+Успешными считаются ответы: `200/204/301/302/307/308/403/404/405`.
+
+Результат ноды включает:
+
+- `accessible_count`: 0..4
+- `accessibility`: строка вида `3/4`
+- `is_high_reliability`: `True` если `4/4`
+- `avg_resource_rtt`: средний RTT успешных доменов
+- `ping`: базовая задержка (минимальный RTT из успешных)
+
+### 5) Метрики CPS и UI без лагов
+
+- CPS считается по окну ~1.5 секунды и сглаживается EMA
+- UI получает результаты батчами и отображает только Top‑N (по качеству и RTT)
+
+### 6) Локальная подписка `/sub` и импорт в VPN-клиенты
+
+NPVT поднимает локальный HTTP сервер:
+
+- `http://127.0.0.1:54321/sub`
+
+Он отдаёт Top‑10 лучших нод (сортировка по ping). В UI доступно:
+
+- **COPY SUBSCRIPTION** — копирует URL подписки
+- **Импорт подписки** — открывает deeplink для выбранного клиента:
+  - Happ: `happ://add/<url>`
+  - Clash: `clash://install-config?url=<url>`
+  - Hiddify: `hiddify://install-sub?url=<url>#NPVT`
+  - v2rayN/NekoRay: копирует URL (импорт выполняется в самом клиенте)
+
+### 7) Где лежат кэш и результаты
+
+- кэш ссылок: `%LOCALAPPDATA%\NetPrivacyTool\links_cache.json`
+- результаты: `%LOCALAPPDATA%\NetPrivacyTool\verified_nodes.txt`
+
+### 8) Portable структура (чистая)
+
+После распаковки `NPVT_Portable.zip` структура такая:
+
+```
+NPVT_Portable/
+  NetPrivacyTool.exe
+  core/
+    nv_backend_core.exe
+    geoip.dat
+    geosite.dat
+    wintun.dll
+  data/
+    sources.txt
+```
+
+Никаких `_internal/` рядом быть не должно — используется PyInstaller `--onefile`.
+
+### 9) Сборка релиза
+
+Основная сборка: `build_all.bat`.
+
+На выходе:
+
+- `release/NPVT_Portable.zip`
+- `release/NPVT_Source.zip`
+- `release/NetPrivacyTool_Setup.exe`
+
 ## Конфигурация источников
 
-Файл: `app/data/sources.txt`
+Файл:
+
+- запуск из исходников: `app/data/sources.txt`
+- portable/installer: `data/sources.txt`
 
 ```txt
 vless://...
@@ -131,8 +258,8 @@ It combines:
 ## Downloads (Release)
 
 - **Installer**: `NetPrivacyTool_Setup.exe`
-- **Portable**: `Portable.zip`
-- **Clean Source**: `Source code.zip`
+- **Portable**: `NPVT_Portable.zip`
+- **Clean Source**: `NPVT_Source.zip`
 
 ## Run from source
 
